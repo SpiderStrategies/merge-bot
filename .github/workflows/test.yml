@@ -29,6 +29,10 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Configure npm for private GitHub repos
+        run: |
+          git config --global url."https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf ssh://git@github.com/
+
       - name: Install dependencies
         run: npm ci
 
