@@ -2,7 +2,7 @@ const tap = require('tap')
 
 const { mockCore } = require('gh-action-components')
 
-const BranchMaintainerAction = require('../branch-maintainer-action')
+const BranchMaintainerAction = require('../src/maintain-branches')
 
 const serverUrl = 'https://github.com'
 const runId = 1935306317

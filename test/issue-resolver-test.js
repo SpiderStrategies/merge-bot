@@ -1,7 +1,7 @@
 const tap = require('tap')
 
-const AutoMergeAction = require('../auto-merge-action')
-const IssueResolver = require('../issue-resolver')
+const AutoMergeAction = require('../src/automerge')
+const IssueResolver = require('../src/issue-resolver')
 
 class ActionStub extends AutoMergeAction {
 

@@ -2,7 +2,7 @@ const tap = require('tap')
 
 const { mockCore } = require('gh-action-components')
 
-const AutoMergeAction = require('../auto-merge-action')
+const AutoMergeAction = require('../src/automerge')
 
 const serverUrl = 'https://github.com'
 const runId = 1935306317

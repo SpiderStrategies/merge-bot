@@ -1,7 +1,7 @@
 const tap = require('tap')
 
-const findCleanMergeRef = require('../find-clean-merge-ref')
-const { isRelevantConflict } = require('../find-clean-merge-ref')
+const findCleanMergeRef = require('../src/find-clean-merge-ref')
+const { isRelevantConflict } = require('../src/find-clean-merge-ref')
 
 const branch = 'branch'
 
