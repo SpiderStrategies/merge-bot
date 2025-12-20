@@ -1,3 +1,19 @@
+# Build and Update Dist Workflow
+#
+# Purpose: Automatically rebuilds dist/ when source files change on main
+# When: Only runs AFTER code lands on main (triggered by pushes to main)
+# Why: The dist/ folder contains the bundled code that GitHub Actions uses
+#      when other projects reference this action. It needs to stay in sync
+#      with src/ but we don't want developers to manually run build.
+#
+# Flow:
+#   1. Runs tests (safety check, though test.yml should have caught issues)
+#   2. Builds dist/ using ncc
+#   3. If dist/ changed, creates a new commit and pushes it
+#
+# This runs AFTER code lands on main, keeping dist up to date automatically.
+# The test.yml workflow runs BEFORE code lands on main to validate quality.
+
 name: Build and Update Dist
 
 on:

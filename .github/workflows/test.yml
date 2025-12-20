@@ -1,0 +1,37 @@
+# Test Validation Workflow
+#
+# Purpose: Validates that tests pass on all pushes and pull requests
+# When: Runs on pushes to main AND on all pull requests
+# Goal: Catch issues early - should be a required status check to prevent
+#       merging broken code
+#
+# This runs BEFORE code lands on main, ensuring quality.
+# The build-dist.yml workflow runs AFTER code lands on main.
+
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
