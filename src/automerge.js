@@ -167,7 +167,11 @@ class AutoMergeAction extends BaseAction {
 	 *     there were conflicts
 	 */
 	async merge({branch,
-		options = `--no-commit`
+		// Use "no fastforward" flag to make sure there are always changes to commit;
+		// otherwise, this will break when a new release branch has been created, but
+		// is still identical to the previous release branch. Example:
+		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
+		options = `--no-commit --no-ff`
 	}) {
 		const { pullRequest, baseBranch, prNumber, prBranch } = this.options
 		const sha = pullRequest.head.sha // This is the commit that was just merged into the PRs base
@@ -186,15 +190,9 @@ class AutoMergeAction extends BaseAction {
 			return false
 		}
 
-		// If already up to date, nothing was merged
-		const mergePerformed = !mergeResult.includes(UP_TO_DATE)
-		if (mergePerformed) {
-			// Run linters before committing the merge
-			const lintingPassed = await this.runLinters(branch)
-			if (!lintingPassed) {
-				return false
-			}
-
+		// Already merged into this branch (not expected, but lets handle it (and just skip over))
+		const alreadyMerged = mergeResult.includes(UP_TO_DATE)
+		if (!alreadyMerged) {
 			const commits = await this.fetchCommits(this.options.prNumber)
 			const lastCommit = commits.data.map(c => c.commit).pop()
 			await this.commit(commitMessage, lastCommit.author)
@@ -209,166 +207,13 @@ class AutoMergeAction extends BaseAction {
 			this.conflictBranch = branch
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
 			await this.exec(`git reset --hard ${branch}`) // must wipe out any local changes from merge
-
+			
 			// Create merge-conflicts branch with encoded source and target
 			// Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
 			const sourceBranch = this.options.baseBranch
 			const encodedBranchName = this.createMergeConflictsBranchName(newIssueNumber, sourceBranch, branch)
 			await this.createBranch(encodedBranchName, this.options.prCommitSha)
 			await new IssueResolver(this).resolveIssues()
-		}
-	}
-
-	/**
-	 * Runs linting checks on the merged code before committing
-	 * Auto-fixes ESLint violations when possible, only creates issue if manual fixes needed
-	 * @param {String} branch The branch being merged into
-	 * @returns {Promise<Boolean>} true if linting passed, false if violations found
-	 */
-	async runLinters(branch) {
-		this.core.info('Running linters on merged code...')
-
-		// Check if config files exist (older branches might not have them)
-		const hasSemgrepConfig = await this.fileExists('semgrep.yml')
-		const hasEslintConfig = await this.fileExists('cms/web/static/.eslintrc.js')
-
-		let lintingFailed = false
-		const violations = []
-
-		// Run ESLint with auto-fix if configuration exists
-		if (hasEslintConfig) {
-			this.core.info('Running ESLint with auto-fix...')
-			try {
-				await this.exec('cd cms/web/static && npm install --no-save 2>&1')
-				// Use the standardized lintfix task (auto-fixes, then checks)
-				await this.exec('npm --prefix cms/web/static run lintfix 2>&1 || true')
-				// Stage any auto-fixes
-				await this.exec('git add -A')
-				// Now check if any violations remain using the standard lint task
-				await this.exec('npm --prefix cms/web/static run lintfull')
-				this.core.info('✅ ESLint passed (all violations auto-fixed)')
-			} catch (e) {
-				lintingFailed = true
-				violations.push('ESLint')
-				this.core.warning('❌ ESLint found violations that require manual fixes')
-			}
-		}
-
-		// Run semgrep if configuration exists (uses Gradle task)
-		if (hasSemgrepConfig) {
-			this.core.info('Running semgrep...')
-			try {
-				// Use the standardized Gradle semgrep task
-				await this.exec('cd cms && ./gradlew semgrep')
-				this.core.info('✅ Semgrep passed')
-			} catch (e) {
-				lintingFailed = true
-				violations.push('Semgrep')
-				this.core.warning('❌ Semgrep found violations')
-			}
-		}
-
-		if (lintingFailed) {
-			await this.handleLintingFailure(branch, violations)
-			return false
-		}
-
-		return true
-	}
-
-	async handleLintingFailure(branch, violations) {
-		this.core.warning(`Linting failed: ${violations.join(', ')}`)
-		this.conflictBranch = branch
-
-		// Reset the merge - developer will redo it
-		await this.exec(`git reset --hard ${branch}`)
-
-		// Create issue for developer to fix violations
-		await this.createLintingIssue({ branch, violations })
-	}
-
-	async createLintingIssue({branch, violations}) {
-		const issueNumber = this.issueNumber
-		const branchObj = this.config.branches[branch] || {}
-		const title = `Linting violations in merge${issueNumber ? ' #' + issueNumber : ''} (${this.options.prCommitSha.substring(0,9)}) into ${branch}`
-
-		const newIssueResponse = await this.execRest(
-			(api, opts) => api.issues.create(opts),
-			{
-				title,
-				milestone: branchObj.milestoneNumber,
-				labels: [`high priority`, 'merge conflict']
-			},
-			'to create linting issue'
-		)
-		const { number: conflictIssueNumber, html_url } = newIssueResponse.data
-
-		const bodyFile = await this.writeLintingComment({branch, issueNumber, violations, conflictIssueNumber})
-		await this.exec(`gh issue edit ${conflictIssueNumber} --body-file ${bodyFile} --add-assignee "${this.options.prAuthor}"`)
-
-		this.issueUrl = html_url
-		this.core.info(`Created linting issue: ${html_url}`)
-
-		return conflictIssueNumber
-	}
-
-	async writeLintingComment({branch, issueNumber, violations, conflictIssueNumber}) {
-		const sourceBranch = this.options.baseBranch
-		const newBranch = this.createMergeConflictsBranchName(conflictIssueNumber, sourceBranch, branch)
-		const { prNumber, prAuthor } = this.options
-		const issueText = issueNumber ? `for issue #${issueNumber}` : ``
-
-		// Build linting steps dynamically based on which linters failed
-		const lintSteps = []
-
-		// Plain English step explaining what to do
-		lintSteps.push(`4. Resolve the linting violations:`)
-
-		let stepNum = 5
-
-		// Only add ESLint step if ESLint found violations
-		if (violations.includes('ESLint')) {
-			lintSteps.push(`   - \`npm --prefix cms/web/static run lintfix\` (auto-fixes what it can, then shows remaining violations)`)
-			lintSteps.push(`   - Fix any remaining ESLint violations`)
-		}
-
-		// Only add semgrep step if semgrep found violations
-		if (violations.includes('Semgrep')) {
-			lintSteps.push(`   - \`./cms/gradlew semgrep\` (shows violations requiring manual fixes)`)
-			lintSteps.push(`   - Fix any remaining semgrep violations`)
-		}
-
-		lintSteps.push(`${stepNum}. \`git add -A && git commit -m "Fix linting violations - Fixes #${conflictIssueNumber}"\``)
-
-		let lines = [`## Automatic Merge Failed - Linting Violations`,
-			`@${prAuthor} changes from pull request #${prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}) due to linting violations.`,
-			``,
-			`### Violations Found`,
-			violations.join(', '),
-			``,
-			`### Fix Instructions`,
-			`Run these commands to fix the violations and submit a new pull request against the \`${branch}\` branch:`,
-			``,
-			`1. \`git fetch\``,
-			`2. \`git checkout --no-track -b ${newBranch} ${this.getOriginBranchForConflict(branch)}\``,
-			`3. \`${this.getMergeCommitMessage(newBranch, conflictIssueNumber)}\``,
-			...lintSteps,
-			`${stepNum + 1}. \`git push --set-upstream origin ${newBranch}\``,
-			`${stepNum + 2}. Create a PR against \`${branch}\` (use \`createPR -b ${branch}\` if you have [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
-			``
-		]
-
-		const filename = '.linting-issue-comment.txt'
-		await writeFile(filename, lines.join('\n'))
-		return filename
-	}
-
-	async fileExists(filepath) {
-		try {
-			await this.exec(`test -f ${filepath}`)
-			return true
-		} catch (e) {
-			return false
 		}
 	}
 
@@ -428,8 +273,8 @@ class AutoMergeAction extends BaseAction {
 	 * @returns {Promise<string>}
 	 */
 	async writeComment({branch, issueNumber, conflicts, conflictIssueNumber}) {
-		const sourceBranch = this.options.baseBranch
-		const newBranch = this.createMergeConflictsBranchName(conflictIssueNumber, sourceBranch, branch)
+		const branchAlias = this.config.getBranchAlias(branch)
+		const newBranch = this.conflictsBranchName(issueNumber, branchAlias, this.originalPrNumber)
 		const { prNumber, prAuthor, prCommitSha } = this.options
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ``
 		let lines = [`## Automatic Merge Failed`,
@@ -440,7 +285,7 @@ class AutoMergeAction extends BaseAction {
 			`Run these commands to perform the merge, then open a new pull request against the \`${branch}\` branch.`,
 			`1. \`git fetch\``,
 			`1. \`git checkout --no-track -b ${newBranch} ${this.getOriginBranchForConflict(branch)}\``,
-			`1. \`${this.getMergeCommitMessage(newBranch, conflictIssueNumber)}\``,
+			`1. \`git merge ${prCommitSha} -m "Merge commit ${prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"\``,
 			`1. \`git push --set-upstream origin ${newBranch}\``,
 			`1. \`createPR -b ${branch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			``,
@@ -468,15 +313,6 @@ class AutoMergeAction extends BaseAction {
 
 	conflictsBranchName(issueNumber, branchAlias, originalPrNumber) {
 		return `issue-${issueNumber}-pr-${originalPrNumber}-conflicts-${branchAlias.replaceAll(' ', '-')}`
-	}
-
-	/**
-	 * Generates the merge commit message for resolving conflicts/linting issues
-	 * DRY: Used by both merge conflict and linting issue instructions
-	 */
-	getMergeCommitMessage(newBranch, conflictIssueNumber) {
-		const { prCommitSha } = this.options
-		return `git merge ${prCommitSha} -m "Merge commit ${prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"`
 	}
 }
 
