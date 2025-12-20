@@ -1,0 +1,18 @@
+name: 'Merge Bot'
+description: 'Merges PRs forward through release branches and maintains branch-here pointers'
+inputs:
+  config-file:
+    description: 'Path to the branch config file (.spider-merge-bot-config.json)'
+    required: true
+  repo-token:
+    description: 'GitHub token with repo access'
+    required: true
+outputs:
+  status:
+    description: 'Status: success, warning, or failure'
+  status-message:
+    description: 'Detailed status message for Slack notifications'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+

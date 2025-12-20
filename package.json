@@ -1,0 +1,27 @@
+{
+  "name": "merge-bot",
+  "version": "1.0.0",
+  "description": "GitHub Action that merges PRs forward and maintains branch-here pointers",
+  "main": "src/merge-bot.js",
+  "scripts": {
+    "build": "ncc build src/merge-bot.js -o dist",
+    "test": "tap"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpiderStrategies/merge-bot.git"
+  },
+  "author": "Spider Strategies",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@actions/core": "^1.10.0",
+    "@actions/github": "^5.0.0",
+    "gh-action-components": "git+ssh://git@github.com/SpiderStrategies/gh-action-components.git"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.0",
+    "tap": "^18.0.0"
+  }
+}
+
