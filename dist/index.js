@@ -6346,8 +6346,8 @@ module.exports = configReader
 /***/ 8178:
 /***/ ((module) => {
 
-const ISSUE_REGEX = /#(\d{3,})/g
-const BRANCH_ISSUE_REGEX = /(\d{3,})/g
+const ISSUE_REGEX = /#(\d{3,})/
+const BRANCH_ISSUE_REGEX = /(\d{3,})/
 
 /**
  * Common algorithm for finding an issue number:
@@ -36413,59 +36413,126 @@ module.exports = {
 const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = __nccwpck_require__(9992)
 
 /**
+ * Builds regex patterns for detecting merge conflicts across the entire branch chain.
+ *
+ * This function creates patterns to match merge-conflict branch names for all relevant
+ * merge paths from the source branch all the way to main. It handles three scenarios:
+ * 1. Full chain mode: checks conflicts from source to all downstream branches, plus
+ *    conflicts between intermediate branches in the chain
+ * 2. Backwards compatibility with targetBranch: checks only immediate next hop
+ * 3. Backwards compatibility without targetBranch: returns empty array to match all conflicts
+ *
+ * @param {String} normalizedBranch The source branch name with dots replaced by dashes
+ * @param {String} targetBranch The immediate target branch (optional, for backwards compatibility)
+ * @param {Array<String>} allBranchesInChain All branches from source to main, in order
+ * @returns {Array<String>} Array of regex pattern strings for matching conflict branch names
+ */
+function buildConflictPatterns(normalizedBranch, targetBranch, allBranchesInChain) {
+	const conflictPatterns = []
+
+	if (allBranchesInChain.length > 0) {
+		// Check for conflicts from THIS branch to any downstream branch
+		for (const downstreamBranch of allBranchesInChain) {
+			const normalizedDownstream = downstreamBranch.replace(/\./g, '-')
+			conflictPatterns.push(`${MB_BRANCH_FAILED_PREFIX}\\d+-${normalizedBranch}-to-${normalizedDownstream}`)
+		}
+
+		// ALSO check for conflicts from ANY intermediate branch in the chain
+		// Example: if maintaining release-5.7.2 which goes through [5.8.0, main]:
+		// - Check conflicts FROM 5.7.2 to anywhere (already done above)
+		// - Check conflicts FROM 5.8.0 to main (commits that made it to 5.8.0 but not main)
+		for (let i = 0; i < allBranchesInChain.length - 1; i++) {
+			const sourceBranch = allBranchesInChain[i]
+			const normalizedSource = sourceBranch.replace(/\./g, '-')
+			// Check conflicts from this intermediate branch to anything downstream
+			for (let j = i + 1; j < allBranchesInChain.length; j++) {
+				const targetBranch = allBranchesInChain[j]
+				const normalizedTarget = targetBranch.replace(/\./g, '-')
+				conflictPatterns.push(`${MB_BRANCH_FAILED_PREFIX}\\d+-${normalizedSource}-to-${normalizedTarget}`)
+			}
+		}
+	} else if (targetBranch) {
+		// Backwards compatibility: just check the immediate next hop
+		const normalizedTarget = targetBranch.replace(/\./g, '-')
+		conflictPatterns.push(`${MB_BRANCH_FAILED_PREFIX}\\d+-${normalizedBranch}-to-${normalizedTarget}`)
+	}
+	// else: no patterns, fall back to checking ANY merge-conflicts branch (backwards compatibility)
+
+	return conflictPatterns
+}
+
+/**
+ * Finds the latest commit on a branch that has merged cleanly ALL THE WAY to main.
+ *
+ * CRITICAL: This function should only be called when commits have reached main,
+ * as it's used to determine which commits are safe to include in branch-here pointers.
  *
  * @param {BaseAction} action An action instance that can be used to exec commands
  * @param {String} branch A branch to inspect (source branch)
  * @param {String} targetBranch The branch that this source branch merges into (optional for backwards compatibility)
+ * @param {Array<String>} allBranchesInChain All branches from this branch to main, in order
  * @returns {Promise<string>} The ref (branch name or commit) that represents
  * the commit in the history where we know there are no pending merge conflicts.
  * If null, that indicates the branch-here branch can not be advanced any further
  */
-async function findCleanMergeRef(action, branch, targetBranch) {
-	// This is the point that PRs can be based from
-	let cleanMergePoint
-
+async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChain = []) {
 	// topo-order so parent commits are grouped w/ their children
 	const gitLogCmd = `git log` +
-		` origin/${MB_BRANCH_HERE_PREFIX}${branch}...origin/${branch}` + // all of commits with a failure tag
+		` origin/${MB_BRANCH_HERE_PREFIX}${branch}...origin/${branch}` + // all commits since last branch-here update
 		` --pretty=format:"%H %d" --topo-order` // %d to see refs
 
 	const history = (await action.exec(gitLogCmd)).split('\n')
 
-	// Convert branch names to the format used in merge-conflicts branch names
-	// e.g., "release-5.8.0" -> "release-5-8-0"
 	const normalizedBranch = branch.replace(/\./g, '-')
-	const normalizedTarget = targetBranch ? targetBranch.replace(/\./g, '-') : null
-
-	// Build the pattern for relevant merge-conflicts branches
-	// Pattern: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
-	const relevantConflictPattern = normalizedTarget
-		? `${MB_BRANCH_FAILED_PREFIX}\\d+-${normalizedBranch}-to-${normalizedTarget}`
-		: null
+	const conflictPatterns = buildConflictPatterns(normalizedBranch, targetBranch, allBranchesInChain)
 
 	// Reverse history so oldest commits are first
 	const reversedHistory = history.reverse()
 
 	// Find the FIRST (oldest) relevant conflict
 	// This ensures we stop before ALL conflicting commits (most conservative)
-	const idx = reversedHistory.findIndex(line => isRelevantConflict(line, relevantConflictPattern))
-
-	if (idx != -1) {
-		// We have `merge-conflict` branches
-
-		if (idx < 2) {
-			// branch-here is already adjacent to a merge-conflicts branch and can't be advanced
-			cleanMergePoint = null
-		} else {
-			// Commits that came before the first `merge-conflicts-*` branch
-			let commits = reversedHistory.splice(0, idx).map(commit => commit.split(' ')[0])
-			cleanMergePoint = await findValidAncestor(action, commits, branch)
+	const conflictIdx = reversedHistory.findIndex(line => {
+		// If no patterns specified, treat ANY merge-conflicts branch as relevant (backwards compat)
+		if (conflictPatterns.length === 0) {
+			return isRelevantConflict(line, null)
 		}
-	} else {
-		cleanMergePoint = `origin/${branch}`
+		// Otherwise, check if line matches any of our patterns
+		return conflictPatterns.some(pattern => isRelevantConflict(line, pattern))
+	})
+
+	return await determineCleanMergePoint(action, branch, reversedHistory, conflictIdx)
+}
+
+
+/**
+ * Determines the clean merge point based on the location of merge conflicts in history.
+ *
+ * This function takes the index of the first (oldest) conflict in the reversed history
+ * and decides where the branch-here pointer can safely be advanced to. Three outcomes:
+ * 1. No conflicts found: can advance to the tip of the branch
+ * 2. Conflicts too close to current branch-here: cannot advance (returns null)
+ * 3. Conflicts found with safe distance: advance to most recent valid ancestor before conflicts
+ *
+ * @param {BaseAction} action An action instance that can be used to exec commands
+ * @param {String} branch The branch being maintained
+ * @param {Array<String>} reversedHistory Git log history with oldest commits first
+ * @param {Number} conflictIdx Index of first conflict in reversedHistory, or -1 if none
+ * @returns {Promise<string|null>} The ref to advance to, or null if cannot advance
+ */
+async function determineCleanMergePoint(action, branch, reversedHistory, conflictIdx) {
+	if (conflictIdx === -1) {
+		return `origin/${branch}`
 	}
 
-	return cleanMergePoint
+	// We have merge-conflict branches
+	if (conflictIdx < 2) {
+		// branch-here is already adjacent to a merge-conflicts branch and can't be advanced
+		return null
+	}
+
+	// Commits that came before the first merge-conflicts-* branch
+	const commits = reversedHistory.splice(0, conflictIdx).map(commit => commit.split(' ')[0])
+	return await findValidAncestor(action, commits, branch)
 }
 
 /**
@@ -36528,6 +36595,8 @@ async function findValidAncestor(action, commits, branch) {
 }
 
 module.exports = findCleanMergeRef
+module.exports.buildConflictPatterns = buildConflictPatterns
+module.exports.determineCleanMergePoint = determineCleanMergePoint
 module.exports.isRelevantConflict = isRelevantConflict
 module.exports.findValidAncestor = findValidAncestor
 
@@ -36649,7 +36718,7 @@ class BranchMaintainerAction extends BaseAction {
 	async deleteBranch() {
 		// Only delete this branch if it's a merge-conflict branch
 		const branch = this.options.pullRequest.head.ref || ''
-		const regex = /issue-\d*-pr-\d*-conflicts-*/g.exec(branch)
+		const regex = /^merge-conflicts-\d+/.exec(branch)
 
 		if (regex?.length) {
 			// Conflicts PR was just closed. Extract the "fixes issue" from this pull request
@@ -36676,8 +36745,8 @@ class BranchMaintainerAction extends BaseAction {
 		this.terminalBranch = branches[branches.length - 1]
 		this.core.info(`branches: ${JSON.stringify(branches)}`)
 		this.core.info(`terminal branch: ${this.terminalBranch}`)
+
 		for (const branch of branches) {
-			// We're at the end of the line, we don't use branch-here for this one
 			if (branch === this.terminalBranch) {
 				this.core.info(`At terminal branch (${branch}), no maintenance required`)
 				break
@@ -36685,18 +36754,56 @@ class BranchMaintainerAction extends BaseAction {
 			this.startGroup(`Maintaining branch-here pointers for branch: ${branch}`)
 			try {
 				await this.exec(`git checkout ${branch}`)
-				// Get the target branch this source branch merges into
+				const downstreamChain = this.buildDownstreamBranchChain(branch)
+				this.core.info(`Checking for conflicts from ${branch} through chain: ${downstreamChain.join(' -> ')}`)
+
 				const targetBranch = this.config.mergeOperations?.[branch]
-				let cleanMergePoint = await findCleanMergeRef(this, branch, targetBranch)
-				if (cleanMergePoint) {
-					await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
-				}
+				await this.updateBranchHerePointer(branch, targetBranch, downstreamChain)
 			} catch (e) {
 				await this.onError(e)
 				break
 			}finally {
 				this.endGroup()
 			}
+		}
+	}
+
+	/**
+	 * Builds the chain of downstream branches from a starting branch to the
+	 * terminal branch. This chain is used to check for conflicts at all points
+	 * in the merge path.
+	 *
+	 * @param {string} startBranch - The branch to start building the chain from
+	 * @returns {Array<string>} An ordered array of branch names representing
+	 *   the downstream merge path (e.g., ['release/23.12', 'release/24.01', 'main'])
+	 */
+	buildDownstreamBranchChain(startBranch) {
+		const chain = []
+		let currentBranch = startBranch
+		while (this.config.mergeOperations[currentBranch]) {
+			const nextBranch = this.config.mergeOperations[currentBranch]
+			chain.push(nextBranch)
+			currentBranch = nextBranch
+		}
+		return chain
+	}
+
+	/**
+	 * Updates the branch-here pointer for a given branch by finding a clean
+	 * merge point and fast-forwarding to it. If no clean merge point is found,
+	 * the branch-here pointer is left unchanged.
+	 *
+	 * @param {string} branch - The source branch being maintained
+	 * @param {string} targetBranch - The immediate target branch for this merge
+	 * @param {Array<string>} downstreamChain - The full chain of downstream branches
+	 *   to check for conflicts
+	 */
+	async updateBranchHerePointer(branch, targetBranch, downstreamChain) {
+		const cleanMergePoint = await findCleanMergeRef(this, branch, targetBranch, downstreamChain)
+		if (cleanMergePoint) {
+			await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
+		} else {
+			this.core.info(`No clean merge point found for ${branch}, branch-here cannot be advanced`)
 		}
 	}
 
@@ -38735,6 +38842,7 @@ const github = __nccwpck_require__(3228)
 
 const AutoMergeAction = __nccwpck_require__(5180)
 const BranchMaintainerAction = __nccwpck_require__(7517)
+const { configReader } = __nccwpck_require__(8863)
 
 const { pull_request, repository } = github.context.payload
 const configFile = core.getInput('config-file', { required: true })
@@ -38755,19 +38863,65 @@ async function run() {
 		prCommitSha: head.sha,
 	}
 
+	// Determine terminal branch to know when commits reach the end
+	const config = configReader(configFile, { baseBranch: base.ref })
+	const terminalBranch = determineTerminalBranch(config)
+
 	// Phase 1: Merge forward
 	const automerge = new AutoMergeAction(options)
 	await automerge.run()
 
-	// Phase 2: Maintain branch-here pointers (only if PR was merged)
-	if (pull_request.merged) {
+	// Phase 2: Maintain branch-here pointers
+	await maintainBranchHerePointers(automerge, terminalBranch)
+}
+
+/**
+ * Determines the terminal branch (last branch in the merge chain, typically main).
+ *
+ * @param {Object} config The configuration object containing branch definitions
+ * @returns {string} The name of the terminal branch
+ */
+function determineTerminalBranch(config) {
+	const branches = Object.keys(config.branches)
+	return branches[branches.length - 1]
+}
+
+/**
+ * Maintains branch-here pointers by updating them to the latest commit that
+ * successfully merged all the way to main.
+ *
+ * CRITICAL: Only runs when commits have merged ALL THE WAY to main.
+ * This ensures branch-here branches only include commits that have successfully
+ * merged through the entire release chain, preventing users from inheriting
+ * conflicts from earlier in the chain.
+ *
+ * Run conditions:
+ * 1. PR was merged directly to main (terminal branch)
+ * 2. Conflict resolution PR merged to main
+ * 3. Automerge completed successfully all the way to main
+ *
+ * @param {AutoMergeAction} automerge The automerge action instance
+ * @param {string} terminalBranch The terminal branch (typically main)
+ */
+async function maintainBranchHerePointers(automerge, terminalBranch) {
+	if (!pull_request.merged) {
+		core.info('PR was not merged, skipping branch maintenance')
+		return
+	}
+
+	const isTerminalBranch = base.ref === terminalBranch
+	const automergeSucceeded = automerge.conflictBranch === undefined
+	const commitsReachedMain = isTerminalBranch || automergeSucceeded
+
+	if (commitsReachedMain) {
+		core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
 		const maintainer = new BranchMaintainerAction({
 			configFile,
 			pullRequest: pull_request,
 		})
 		await maintainer.run()
 	} else {
-		core.info('PR was not merged, skipping branch maintenance')
+		core.info(`Skipping branch maintenance: commits blocked at ${automerge.conflictBranch}, have not reached main yet`)
 	}
 }
 
