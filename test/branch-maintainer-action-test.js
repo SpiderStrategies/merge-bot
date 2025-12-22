@@ -157,3 +157,119 @@ tap.test('deleteBranch ignores non-merge-conflict branches', async t => {
 
 	t.equal(deletedBranches.length, 0, 'should not delete non-merge-conflicts branches')
 })
+
+tap.test('buildDownstreamBranchChain', async t => {
+	const action = new ActionStub({})
+
+	t.test('single hop chain', async t => {
+		action.config = {
+			mergeOperations: {
+				'release-5.7': 'main'
+			}
+		}
+		const chain = action.buildDownstreamBranchChain('release-5.7')
+		t.same(['main'], chain)
+	})
+
+	t.test('multi-hop chain', async t => {
+		action.config = {
+			mergeOperations: {
+				'release-5.6': 'release-5.7',
+				'release-5.7': 'release-5.8',
+				'release-5.8': 'main'
+			}
+		}
+		const chain = action.buildDownstreamBranchChain('release-5.6')
+		t.same(['release-5.7', 'release-5.8', 'main'], chain)
+	})
+
+	t.test('terminal branch returns empty chain', async t => {
+		action.config = {
+			mergeOperations: {
+				'release-5.7': 'main'
+			}
+		}
+		const chain = action.buildDownstreamBranchChain('main')
+		t.same([], chain)
+	})
+
+	t.test('mid-chain branch', async t => {
+		action.config = {
+			mergeOperations: {
+				'release-5.6': 'release-5.7',
+				'release-5.7': 'release-5.8',
+				'release-5.8': 'main'
+			}
+		}
+		const chain = action.buildDownstreamBranchChain('release-5.7')
+		t.same(['release-5.8', 'main'], chain)
+	})
+})
+
+tap.test('readConfig', async t => {
+	t.test('skips config when no configFile provided', async t => {
+		const action = new ActionStub({
+			baseBranch: 'main'
+		})
+
+		await action.readConfig()
+
+		// When no configFile, config is not set by readConfig
+		// (config would be set directly in tests)
+		t.pass('should not throw when no configFile')
+	})
+})
+
+tap.test('fastForward', async t => {
+	t.test('creates new branch when branch does not exist', async t => {
+		const execCalls = []
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				if (cmd.includes('git ls-remote')) {
+					return ''  // Branch doesn't exist
+				}
+				return ''
+			}
+		}
+
+		const action = new TestAction({})
+		action.core = mockCore({})
+
+		await action.fastForward('branch-here-release-5.7', 'abc123')
+
+		t.ok(execCalls.find(c => c.includes('git checkout -b branch-here-release-5.7 abc123')),
+			'should create new branch')
+		t.ok(execCalls.find(c => c.includes('git push --set-upstream')),
+			'should push new branch')
+	})
+
+	t.test('fast-forwards existing branch', async t => {
+		const execCalls = []
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				if (cmd.includes('git ls-remote')) {
+					return 'refs/heads/branch-here-release-5.7'  // Branch exists
+				}
+				return ''
+			}
+		}
+
+		const action = new TestAction({})
+		action.core = mockCore({})
+
+		await action.fastForward('branch-here-release-5.7', 'def456')
+
+		t.ok(execCalls.find(c => c.includes('git checkout branch-here-release-5.7')),
+			'should checkout existing branch')
+		t.ok(execCalls.find(c => c.includes('git pull')),
+			'should pull latest changes')
+		t.ok(execCalls.find(c => c.includes('git merge --ff-only def456')),
+			'should fast-forward merge')
+		t.ok(execCalls.find(c => c.includes('git push --set-upstream')),
+			'should push changes')
+	})
+})

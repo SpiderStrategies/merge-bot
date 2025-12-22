@@ -135,3 +135,280 @@ tap.test('createMergeConflictsBranchName encodes source and target branches', as
 		t.equal('merge-conflicts-68590-release-5-7-2-to-release-5-8-0', actual)
 	})
 })
+
+tap.test('executeMerges', async t => {
+	t.test('successful merge to all targets', async t => {
+		const execCalls = []
+		const startGroups = []
+		const endGroupCount = []
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				return ''
+			}
+
+			async merge({branch}) {
+				return true  // Success
+			}
+
+			startGroup(msg) {
+				startGroups.push(msg)
+			}
+
+			endGroup() {
+				endGroupCount.push(1)
+			}
+
+			async deleteBranch(branch) {
+				execCalls.push(`deleteBranch:${branch}`)
+			}
+		}
+
+		const action = new TestAction({
+			prBranch: 'issue-123-my-fix'
+		})
+		action.core = mockCore({})
+
+		const result = await action.executeMerges(['release-5.7', 'release-5.8', 'main'])
+
+		t.equal(result, true, 'should return true when all merges succeed')
+		t.equal(execCalls.filter(c => c.startsWith('git checkout')).length, 3, 'should checkout all branches')
+		t.equal(execCalls.find(c => c.includes('deleteBranch:issue-123-my-fix')), 'deleteBranch:issue-123-my-fix', 'should delete PR branch on success')
+		t.equal(startGroups.length, 3, 'should start group for each merge')
+		t.equal(endGroupCount.length, 3, 'should end group for each merge')
+	})
+
+	t.test('stops merging on first conflict', async t => {
+		const execCalls = []
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				return ''
+			}
+
+			async merge({branch}) {
+				// Fail on second branch
+				return branch !== 'release-5.8'
+			}
+
+			startGroup() {}
+			endGroup() {}
+
+			generateMergeConflictWarning() {
+				this.warningGenerated = true
+			}
+		}
+
+		const action = new TestAction({
+			prBranch: 'issue-123-my-fix'
+		})
+		action.core = mockCore({})
+		action.conflictBranch = 'release-5.8'
+
+		const result = await action.executeMerges(['release-5.7', 'release-5.8', 'main'])
+
+		t.equal(result, false, 'should return false when merge fails')
+		t.equal(execCalls.filter(c => c.startsWith('git checkout')).length, 2, 'should stop after failed merge')
+		t.equal(action.warningGenerated, true, 'should generate conflict warning')
+	})
+
+	t.test('handles merge exception', async t => {
+		const execCalls = []
+		let errorHandled = false
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				return ''
+			}
+
+			async merge({branch}) {
+				if (branch === 'release-5.8') {
+					throw new Error('Git merge failed')
+				}
+				return true
+			}
+
+			async onError(err) {
+				errorHandled = true
+				this.core.setOutput('status', 'failure')
+			}
+
+			startGroup() {}
+			endGroup() {}
+		}
+
+		const action = new TestAction({
+			prBranch: 'issue-123-my-fix'
+		})
+		action.core = mockCore({})
+
+		const result = await action.executeMerges(['release-5.7', 'release-5.8', 'main'])
+
+		t.equal(result, false, 'should return false when exception occurs')
+		t.equal(errorHandled, true, 'should call onError when exception occurs')
+		t.equal(execCalls.filter(c => c.startsWith('git checkout')).length, 2, 'should stop after exception')
+	})
+})
+
+tap.test('runAction', async t => {
+	t.test('skips when PR not merged', async t => {
+		let infoCalled = false
+		const action = new ActionStub({
+			pullRequest: {
+				merged: false
+			}
+		})
+		const core = mockCore({})
+		core.info = () => { infoCalled = true }
+		action.core = core
+		action.github = {
+			context: {
+				serverUrl: 'https://github.com',
+				runId: 123,
+				repo: { owner: 'test', repo: 'test' }
+			}
+		}
+
+		await action.runAction()
+
+		t.ok(infoCalled, 'should log info about skipping')
+	})
+
+	t.test('skips when PR against terminal branch', async t => {
+		const action = new ActionStub({
+			pullRequest: {
+				merged: true,
+				merge_commit_sha: 'abc123'
+			}
+		})
+		action.core = mockCore({})
+		action.github = {
+			context: {
+				serverUrl: 'https://github.com',
+				runId: 123,
+				repo: { owner: 'test', repo: 'test' }
+			}
+		}
+		action.config = {
+			mergeTargets: ['main']
+		}
+		action.terminalBranch = null
+
+		await action.postConstruct()
+		await action.initializeState()
+
+		t.equal(action.terminalBranch, 'main')
+	})
+})
+
+tap.test('merge', async t => {
+	t.test('handles already merged case', async t => {
+		const execCalls = []
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				if (cmd.startsWith('git merge')) {
+					return 'Already up to date.'
+				}
+				return ''
+			}
+		}
+
+		const action = new TestAction({
+			pullRequest: {
+				head: { sha: 'abc123' }
+			},
+			baseBranch: 'release-5.7',
+			prNumber: 456,
+			prBranch: 'my-feature'
+		})
+		action.core = mockCore({})
+
+		const result = await action.merge({branch: 'release-5.8'})
+
+		t.equal(result, true, 'should return true even when already merged')
+		t.ok(execCalls.find(c => c.includes('git pull')), 'should pull before merging')
+		t.ok(execCalls.find(c => c.includes('git merge abc123')), 'should attempt merge')
+		t.notOk(execCalls.find(c => c.includes('git commit')), 'should not commit when already merged')
+	})
+
+	t.test('successful merge creates commit', async t => {
+		const execCalls = []
+		let commitCalled = false
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				execCalls.push(cmd)
+				if (cmd.startsWith('git merge')) {
+					return 'Merge made by strategy'
+				}
+				return ''
+			}
+
+			async fetchCommits(prNum) {
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test', email: 'test@example.com' }
+						}
+					}]
+				}
+			}
+
+			async commit(message, author) {
+				commitCalled = true
+			}
+		}
+
+		const action = new TestAction({
+			pullRequest: {
+				head: { sha: 'def456' }
+			},
+			baseBranch: 'release-5.7',
+			prNumber: 789,
+			prBranch: 'my-feature'
+		})
+		action.core = mockCore({})
+
+		const result = await action.merge({branch: 'release-5.8'})
+
+		t.equal(result, true, 'should return true on success')
+		t.ok(commitCalled, 'should create commit when merge successful')
+	})
+
+	t.test('handles conflicts', async t => {
+		let conflictsHandled = false
+
+		class TestAction extends ActionStub {
+			async exec(cmd) {
+				if (cmd.startsWith('git merge')) {
+					throw new Error('Merge conflict')
+				}
+				return ''
+			}
+
+			async handleConflicts(branch) {
+				conflictsHandled = true
+			}
+		}
+
+		const action = new TestAction({
+			pullRequest: {
+				head: { sha: 'ghi789' }
+			},
+			baseBranch: 'release-5.7',
+			prNumber: 999,
+			prBranch: 'my-feature'
+		})
+		action.core = mockCore({})
+
+		const result = await action.merge({branch: 'release-5.8'})
+
+		t.equal(result, false, 'should return false when conflicts occur')
+		t.ok(conflictsHandled, 'should call handleConflicts')
+	})
+})
