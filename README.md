@@ -117,3 +117,7 @@ harmless
 
 - Original implementation: #42921
 - Improved branch-here updates to avoid conflicts and keep branch-here- branches up to date more often: #68703, #63954
+
+## Support
+
+This repository is made public for convenience but is not officially supported for external use. It is maintained by Spider Strategies for internal workflows. Use at your own risk.
