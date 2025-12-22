@@ -72,7 +72,7 @@ async function maintainBranchHerePointers(automerge, terminalBranch) {
 
 	const isTerminalBranch = base.ref === terminalBranch
 	const automergeSucceeded = automerge.conflictBranch === undefined
-	const commitsReachedMain = isTerminalBranch || automergeSucceeded
+	const commitsReachedMain = !isTerminalBranch && automergeSucceeded
 
 	if (commitsReachedMain) {
 		core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
@@ -81,6 +81,8 @@ async function maintainBranchHerePointers(automerge, terminalBranch) {
 			pullRequest: pull_request,
 		})
 		await maintainer.run()
+	} else if (isTerminalBranch) {
+		core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
 	} else {
 		core.info(`Skipping branch maintenance: commits blocked at ${automerge.conflictBranch}, have not reached main yet`)
 	}
