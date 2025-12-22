@@ -78,8 +78,8 @@ class BranchMaintainerAction extends BaseAction {
 		this.terminalBranch = branches[branches.length - 1]
 		this.core.info(`branches: ${JSON.stringify(branches)}`)
 		this.core.info(`terminal branch: ${this.terminalBranch}`)
+
 		for (const branch of branches) {
-			// We're at the end of the line, we don't use branch-here for this one
 			if (branch === this.terminalBranch) {
 				this.core.info(`At terminal branch (${branch}), no maintenance required`)
 				break
@@ -87,18 +87,56 @@ class BranchMaintainerAction extends BaseAction {
 			this.startGroup(`Maintaining branch-here pointers for branch: ${branch}`)
 			try {
 				await this.exec(`git checkout ${branch}`)
-				// Get the target branch this source branch merges into
+				const downstreamChain = this.buildDownstreamBranchChain(branch)
+				this.core.info(`Checking for conflicts from ${branch} through chain: ${downstreamChain.join(' -> ')}`)
+
 				const targetBranch = this.config.mergeOperations?.[branch]
-				let cleanMergePoint = await findCleanMergeRef(this, branch, targetBranch)
-				if (cleanMergePoint) {
-					await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
-				}
+				await this.updateBranchHerePointer(branch, targetBranch, downstreamChain)
 			} catch (e) {
 				await this.onError(e)
 				break
 			}finally {
 				this.endGroup()
 			}
+		}
+	}
+
+	/**
+	 * Builds the chain of downstream branches from a starting branch to the
+	 * terminal branch. This chain is used to check for conflicts at all points
+	 * in the merge path.
+	 *
+	 * @param {string} startBranch - The branch to start building the chain from
+	 * @returns {Array<string>} An ordered array of branch names representing
+	 *   the downstream merge path (e.g., ['release/23.12', 'release/24.01', 'main'])
+	 */
+	buildDownstreamBranchChain(startBranch) {
+		const chain = []
+		let currentBranch = startBranch
+		while (this.config.mergeOperations[currentBranch]) {
+			const nextBranch = this.config.mergeOperations[currentBranch]
+			chain.push(nextBranch)
+			currentBranch = nextBranch
+		}
+		return chain
+	}
+
+	/**
+	 * Updates the branch-here pointer for a given branch by finding a clean
+	 * merge point and fast-forwarding to it. If no clean merge point is found,
+	 * the branch-here pointer is left unchanged.
+	 *
+	 * @param {string} branch - The source branch being maintained
+	 * @param {string} targetBranch - The immediate target branch for this merge
+	 * @param {Array<string>} downstreamChain - The full chain of downstream branches
+	 *   to check for conflicts
+	 */
+	async updateBranchHerePointer(branch, targetBranch, downstreamChain) {
+		const cleanMergePoint = await findCleanMergeRef(this, branch, targetBranch, downstreamChain)
+		if (cleanMergePoint) {
+			await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
+		} else {
+			this.core.info(`No clean merge point found for ${branch}, branch-here cannot be advanced`)
 		}
 	}
 

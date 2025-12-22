@@ -301,3 +301,47 @@ df05e8531bbe7896917157a1590ee4794688bde1  (origin/branch-here-release-5.8.0)`
 	// Should treat old format as relevant (conservative approach)
 	t.equal(cleanMergePoint, "f8f591de2d7ff1ee154fbd486a2c5afab972e5ea")
 })
+
+tap.test(`checks conflicts at ALL points in chain, not just next hop`, async t => {
+	// THE BUG SCENARIO:
+	// release-5.7.2 -> release-5.8.0 -> main
+	//
+	// Commit A (aaa111) on release-5.7.2:
+	//   - Merges cleanly to release-5.8.0 (conflict was already resolved by User A)
+	//   - BUT conflicts when merging release-5.8.0 -> main
+	//
+	// OLD BUG: branch-here-release-5.7.2 would advance to include Commit A
+	//   because it only checked conflicts to the immediate next hop (5.8.0)
+	//
+	// FIXED: branch-here-release-5.7.2 should NOT advance past the commit before A
+	//   because we check for conflicts at ALL points in the chain to main
+	//
+	// This prevents User B from branching from branch-here-release-5.7.2,
+	// inheriting Commit A, and then getting a conflict from 5.8.0 -> main
+	// that they didn't cause.
+
+	// Commits newest to oldest (reverse order, will be reversed in function):
+	// - aaa111, aaa222, aaa333: newest commits on release-5.7.2 (not yet evaluated)
+	// - bbb111: has a conflict when it reaches release-5.8.0 and tries to merge to main
+	//           (conflict branch created at the point where it fails: 5.8.0 -> main)
+	// - ccc111, ccc222: commits before the conflict
+	// - ddd111: last known good commit (current branch-here pointer)
+	const logOutput = `aaa1111111111111111111111111111111111111  (HEAD -> release-5.7.2)
+aaa2222222222222222222222222222222222222
+aaa3333333333333333333333333333333333333
+bbb1111111111111111111111111111111111111  (origin/merge-conflicts-69300-release-5-8-0-to-main)
+ccc1111111111111111111111111111111111111
+ccc2222222222222222222222222222222222222
+ddd1111111111111111111111111111111111111  (origin/branch-here-release-5.7.2)`
+
+	const action = new ActionStub(logOutput)
+
+	// When maintaining branch-here for release-5.7.2, pass the full downstream chain
+	const downstreamChain = ['release-5.8.0', 'main']
+	const cleanMergePoint = await findCleanMergeRef(action, 'release-5.7.2', 'release-5.8.0', downstreamChain)
+
+	// Should stop at ccc111 (before bbb111) because bbb111 has a conflict
+	// at release-5.8.0 -> main (even though 5.7.2 -> 5.8.0 was clean)
+	t.equal(cleanMergePoint, 'ccc1111111111111111111111111111111111111',
+		'should not advance past commit that conflicts downstream in the chain')
+})
