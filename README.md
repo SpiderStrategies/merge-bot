@@ -19,8 +19,9 @@ includes:
 **Critical**: Developers must ALWAYS branch from `branch-here-{version}` branches,
 NEVER from `release-{version}` branches.
 
-**Why**: branch-here branches only include commits known to merge cleanly forward.
-This prevents developers from inheriting unrelated merge conflicts.
+**Why**: branch-here branches only include commits that have successfully merged
+**all the way to main**. This prevents developers from inheriting merge conflicts
+from anywhere in the release chain.
 
 **Example**:
 - ✅ Branch from: `branch-here-release-5.8.0`
@@ -37,27 +38,80 @@ This prevents developers from inheriting unrelated merge conflicts.
 This encoding allows the branch maintainer to filter conflicts and only consider
 those relevant to the specific merge path.
 
-## GitHub Actions
+## GitHub Action
 
-The merge bot consists of two actions:
+The merge bot is a single consolidated GitHub Action that runs two phases automatically:
 
-1. **gh-action-automerge**: Merges PRs forward, creates conflict issues/branches
-   - Creates encoded merge-conflicts branch names
-   - See: https://github.com/SpiderStrategies/gh-action-automerge
+**Phase 1: Auto-merge**
+- Merges PRs forward through the release branch chain
+- Creates conflict issues and merge-conflicts branches when conflicts occur
+- Uses encoded branch names for conflict tracking
 
-2. **gh-action-branch-maintainer**: Maintains branch-here branches
-   - Filters merge-conflicts branches to only relevant ones
-   - Advances branch-here to latest safe commit
-   - See: https://github.com/SpiderStrategies/gh-action-branch-maintainer
+**Phase 2: Branch Maintenance**
+- Updates branch-here pointers to the latest commit that reached main
+- Checks for merge-conflicts at ALL points in the chain (not just the next hop)
+- Only runs when commits have successfully merged all the way to main
+- Ensures developers never inherit conflicts from earlier in the chain
+
+**Note**: Previously split into `gh-action-automerge` and `gh-action-branch-maintainer`
+(now archived). Consolidated December 2025.
+
+## Usage
+
+The action is used in Spider Impact's workflow:
+
+```yaml
+- uses: SpiderStrategies/private-action-loader@master
+  with:
+    pal-repo-token: ${{ secrets.SPIDER_PAT }}
+    pal-repo-name: SpiderStrategies/merge-bot@main
+    config-file: config.json
+    repo-token: ${{ secrets.SPIDER_PAT }}
+```
+
+It triggers on PR close and automatically handles both merge-forward and branch-here maintenance.
+
+## Repository Structure
+
+```
+merge-bot/
+├── src/
+│   ├── merge-bot.js              # Entry point - orchestrates both phases
+│   ├── automerge.js              # Phase 1: Merge forward logic
+│   ├── maintain-branches.js      # Phase 2: Branch-here maintenance
+│   ├── issue-resolver.js         # Creates conflict resolution issues
+│   ├── find-clean-merge-ref.js   # Finds safe merge points
+│   └── constants.js              # Shared constants
+├── test/                         # Test files
+├── dist/index.js                 # Bundled output (built with ncc)
+└── action.yml                    # GitHub Action definition
+```
 
 ## Configuration
 
-- Config file: `.spider-merge-bot-config.json` (in default branch only)
+- Config file: `.spider-merge-bot-config.json` (in default branch of Spider Impact repo)
 - Defines release branches and merge operations
 - Updated when new release branches are created
 
-## Making and releasing changes
-- See **Release Process** at https://github.com/SpiderStrategies/gh-action-branch-maintainer/blob/master/README.md#release-process
+## Making Changes
+
+To update the merge bot:
+
+1. Make changes to the code in `src/`
+2. Run tests: `npm test`
+3. Commit your changes to `src/` (no need to build or commit `dist/`)
+4. Push to the `main` branch (or create a PR)
+5. A GitHub Action will automatically:
+   - Run tests again
+   - Build `dist/index.js` using `npm run build`
+   - Commit the updated `dist/` folder
+6. Changes take effect immediately - Spider Impact references `@main` so it
+   always uses the latest version
+
+**Note**: The `build-dist.yml` workflow handles building and committing `dist/`
+automatically whenever changes to `src/` land on main. You don't need to
+manually run `npm run build` or commit `dist/index.js`, though doing so is
+harmless
 
 ## Related Issues
 
