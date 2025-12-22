@@ -48,3 +48,112 @@ tap.test(`maintainBranches errors`, async t => {
 	await action.maintainBranches()
 	t.equal(coreMock.outputs['status'], 'failure')
 })
+
+tap.test('deleteBranch detects simple merge-conflicts branches', async t => {
+	const deletedBranches = []
+
+	class TestAction extends BranchMaintainerAction {
+		constructor(options) {
+			super(options)
+		}
+
+		async fetchCommits() {
+			return { data: [] }
+		}
+
+		async execQuietly(cmd) {
+			if (cmd.startsWith('git push origin --delete ')) {
+				const branchName = cmd.replace('git push origin --delete ', '')
+				deletedBranches.push(branchName)
+			}
+		}
+	}
+
+	const action = new TestAction({
+		pullRequest: {
+			number: 1,
+			title: 'Merge conflicts #68875',
+			head: {
+				ref: 'merge-conflicts-68875'
+			},
+			body: 'Fixes #68875'
+		}
+	})
+
+	await action.deleteBranch()
+
+	t.equal(deletedBranches.length, 1, 'should delete the merge-conflicts branch')
+	t.equal(deletedBranches[0], 'merge-conflicts-68875', 'should delete the correct branch')
+})
+
+tap.test('deleteBranch detects encoded merge-conflicts branches', async t => {
+	const deletedBranches = []
+
+	class TestAction extends BranchMaintainerAction {
+		constructor(options) {
+			super(options)
+		}
+
+		async fetchCommits() {
+			return { data: [] }
+		}
+
+		async execQuietly(cmd) {
+			if (cmd.startsWith('git push origin --delete ')) {
+				const branchName = cmd.replace('git push origin --delete ', '')
+				deletedBranches.push(branchName)
+			}
+		}
+	}
+
+	const action = new TestAction({
+		pullRequest: {
+			number: 2,
+			title: 'Merge conflicts #68895',
+			head: {
+				ref: 'merge-conflicts-68895-release-5-7-2-to-release-5-8-0'
+			},
+			body: 'Fixes #68895'
+		}
+	})
+
+	await action.deleteBranch()
+
+	t.equal(deletedBranches.length, 1, 'should delete the merge-conflicts branch')
+	t.equal(deletedBranches[0], 'merge-conflicts-68895', 'should delete the correct branch')
+})
+
+tap.test('deleteBranch ignores non-merge-conflict branches', async t => {
+	const deletedBranches = []
+
+	class TestAction extends BranchMaintainerAction {
+		constructor(options) {
+			super(options)
+		}
+
+		async fetchCommits() {
+			return { data: [] }
+		}
+
+		async execQuietly(cmd) {
+			if (cmd.startsWith('git push origin --delete ')) {
+				const branchName = cmd.replace('git push origin --delete ', '')
+				deletedBranches.push(branchName)
+			}
+		}
+	}
+
+	const action = new TestAction({
+		pullRequest: {
+			number: 3,
+			head: {
+				ref: 'feature-my-awesome-feature'
+			},
+			body: 'Fixes #12345'
+		}
+	})
+
+	await action.deleteBranch()
+
+	t.equal(deletedBranches.length, 0, 'should not delete non-merge-conflicts branches')
+})

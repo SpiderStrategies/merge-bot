@@ -51,7 +51,7 @@ class BranchMaintainerAction extends BaseAction {
 	async deleteBranch() {
 		// Only delete this branch if it's a merge-conflict branch
 		const branch = this.options.pullRequest.head.ref || ''
-		const regex = /issue-\d*-pr-\d*-conflicts-*/g.exec(branch)
+		const regex = /^merge-conflicts-\d+/.exec(branch)
 
 		if (regex?.length) {
 			// Conflicts PR was just closed. Extract the "fixes issue" from this pull request
