@@ -207,7 +207,7 @@ class AutoMergeAction extends BaseAction {
 			this.conflictBranch = branch
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
 			await this.exec(`git reset --hard ${branch}`) // must wipe out any local changes from merge
-			
+
 			// Create merge-conflicts branch with encoded source and target
 			// Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
 			const sourceBranch = this.options.baseBranch
@@ -240,7 +240,7 @@ class AutoMergeAction extends BaseAction {
 			{
 				title,
 				milestone: branchObj.milestoneNumber,
-				labels: [`high priority`, 'merge conflict']
+				labels: [`highest priority`, 'merge conflict']
 			},
 			'to create issue'
 		)
