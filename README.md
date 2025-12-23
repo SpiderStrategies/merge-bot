@@ -27,7 +27,12 @@ from anywhere in the release chain.
 - ✅ Branch from: `branch-here-release-5.8.0`
 - ❌ Never branch from: `release-5.8.0`
 
-### Merge-Conflicts Branch Naming
+### Merge-Conflicts Branches
+
+**Purpose**: These branches serve as **markers in Git history** to track which
+commits have unresolved merge conflicts. They prevent branch-here pointers from
+advancing past conflicted commits, ensuring developers never inherit someone
+else's merge conflicts.
 
 **Format**: `merge-conflicts-{issueNumber}-{sourceBranch}-to-{targetBranch}`
 
@@ -35,8 +40,18 @@ from anywhere in the release chain.
 - `merge-conflicts-68586-release-5-8-0-to-main`
 - `merge-conflicts-68590-release-5-7-2-to-release-5-8-0`
 
-This encoding allows the branch maintainer to filter conflicts and only consider
-those relevant to the specific merge path.
+**How They Work**:
+1. When automerge encounters conflicts, it creates a merge-conflicts branch
+   pointing to the problematic commit
+2. branch-here pointers will NOT advance past commits with merge-conflicts
+   branches
+3. When a developer resolves the conflict and merges their PR, the marker branch
+   is automatically deleted
+4. Once deleted, branch-here can advance past that commit on the next maintenance
+   run
+
+**Important**: If you see stale merge-conflicts branches that weren't cleaned up,
+they will preventing branch-here from advancing and must be deleted manually.
 
 ## GitHub Action
 
