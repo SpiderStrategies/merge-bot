@@ -67,43 +67,6 @@ tap.test(`error status`, async t => {
 	t.equal(coreMock.failedArg, 'Test error')
 })
 
-// Asserts fix for scenario like this
-// https://github.com/SpiderStrategies/Scoreboard/runs/6423638921?check_suite_focus=true
-tap.test(`pr number`, async t => {
-
-	let action = new TestAutoMerger({})
-	action.setOriginalPrNumber('issue-undefined-pr-47384-conflicts-2022', '47387')
-	t.equal('47384', action.originalPrNumber, 'must accept undefined as an issue number')
-
-	action.setOriginalPrNumber('issue-12345-pr-47384-conflicts-2022', '47387')
-	t.equal('47384', action.originalPrNumber, 'must accept any numeric issue number')
-
-	action.setOriginalPrNumber('issue-unexpected123-pr-47384-conflicts-2022', '47387')
-	t.equal('47384', action.originalPrNumber, `don't really care what is in issue place, we're just looking for the pr number`)
-})
-
-tap.test(`getOriginBranchForConflict`, async t => {
-	let action = new TestAutoMerger({})
-	action.config = {
-		mergeTargets: [ 'a', 'b', 'c' ]
-	}
-	await action.initializeState()
-	t.test(`omits branch-here for terminal branch`, async t => {
-		const actual = action.getOriginBranchForConflict('c')
-		t.equal('origin/c', actual)
-	})
-	t.test(`includes branch-here for non terminal branches`, async t => {
-		t.equal('origin/branch-here-a', action.getOriginBranchForConflict('a'))
-		t.equal('origin/branch-here-b', action.getOriginBranchForConflict('b'))
-	})
-})
-
-tap.test('conflictsBranchName handles spaces in alias', async t => {
-	let action = new TestAutoMerger({})
-	const actual = action.conflictsBranchName('1', 'Branch 1.5 emergency', '2')
-	t.equal('issue-1-pr-2-conflicts-Branch-1.5-emergency', actual)
-})
-
 tap.test('createMergeConflictsBranchName encodes source and target branches', async t => {
 	let action = new TestAutoMerger({})
 
@@ -432,7 +395,6 @@ tap.test('createIssue', async t => {
 			gh: mockGh
 		})
 		action.issueNumber = 888
-		action.originalPrNumber = 555
 
 		const newIssueNumber = await action.createIssue({
 			branch: 'main',
@@ -504,7 +466,6 @@ tap.test('writeComment', async t => {
 			core
 		})
 		action.issueNumber = 54321
-		action.originalPrNumber = 12345
 		action.terminalBranch = 'main'
 		action.actionUrl = 'https://github.com/sample/repo/actions/runs/123456'
 
@@ -512,7 +473,8 @@ tap.test('writeComment', async t => {
 			branch: 'release-5.8',
 			issueNumber: 54321,
 			conflicts: 'src/app.js\nsrc/config.js',
-			conflictIssueNumber: 99999
+			conflictIssueNumber: 99999,
+			conflictBranchName: 'merge-conflicts-99999-release-5-7-to-release-5-8'
 		})
 
 		cleanupIssueCommentFile(t)
@@ -527,15 +489,15 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('for issue #54321'), 'should reference issue number')
 		t.ok(content.includes('`release-5.8`'), 'should mention target branch')
 		t.ok(content.includes('git fetch'), 'should include git fetch command')
-		t.ok(content.includes('issue-54321-pr-12345-conflicts-5.8'), 'should include new branch name')
+		t.ok(content.includes('merge-conflicts-99999-release-5-7-to-release-5-8'), 'should use merge-conflicts branch name')
 		t.ok(content.includes('git merge xyz789abc123'), 'should include merge command with sha')
 		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
 		t.ok(content.includes('- src/app.js'), 'should list first conflict file')
 		t.ok(content.includes('- src/config.js'), 'should list second conflict file')
-		t.ok(content.includes('origin/branch-here-release-5.8'), 'should use branch-here for non-terminal branch')
+		t.notOk(content.includes('origin/branch-here-release-5.8'), 'should not use branch-here since working on existing merge-conflicts branch')
 	})
 
-	t.test('omits branch-here for terminal branch conflicts', async t => {
+	t.test('uses merge-conflicts branch directly', async t => {
 		const core = mockCore({})
 		const { readFile } = require('fs/promises')
 
@@ -547,21 +509,21 @@ tap.test('writeComment', async t => {
 			core
 		})
 		action.terminalBranch = 'main'
-		action.originalPrNumber = 111
 
 		const filename = await action.writeComment({
 			branch: 'main',
 			issueNumber: 222,
 			conflicts: 'file.js',
-			conflictIssueNumber: 333
+			conflictIssueNumber: 333,
+			conflictBranchName: 'merge-conflicts-333-release-5-8-0-to-main'
 		})
 
 		cleanupIssueCommentFile(t)
 
 		const content = await readFile(filename, 'utf-8')
 
-		t.ok(content.includes('origin/main'), 'should use origin/main for terminal branch')
-		t.notOk(content.includes('branch-here-main'), 'should not use branch-here for terminal branch')
+		t.ok(content.includes('merge-conflicts-333-release-5-8-0-to-main'), 'should use merge-conflicts branch')
+		t.notOk(content.includes('branch-here'), 'should not reference branch-here when using existing merge-conflicts branch')
 	})
 
 	t.test('handles missing issue number in PR', async t => {
@@ -576,14 +538,14 @@ tap.test('writeComment', async t => {
 			},
 			core
 		})
-		action.originalPrNumber = 777
 		action.terminalBranch = 'main'
 
 		const filename = await action.writeComment({
 			branch: 'release',
 			issueNumber: null,  // No issue linked to PR
 			conflicts: 'test.js',
-			conflictIssueNumber: 888
+			conflictIssueNumber: 888,
+			conflictBranchName: 'merge-conflicts-888-release-5-7-0-to-release'
 		})
 
 		cleanupIssueCommentFile(t)
@@ -592,7 +554,42 @@ tap.test('writeComment', async t => {
 
 		t.ok(content.includes('pull request #777'), 'should still reference PR')
 		t.notOk(content.includes('for issue #'), 'should not mention issue when none exists')
-		t.ok(content.includes('issue-null-pr-777-conflicts-release'), 'should handle null issue in branch name')
+		t.ok(content.includes('merge-conflicts-888-release-5-7-0-to-release'), 'should use merge-conflicts branch name')
+	})
+
+	t.test('branch name uses conflict issue number, not original PR issue', async t => {
+		const core = mockCore({})
+		const { readFile } = require('fs/promises')
+
+		const action = new TestAutoMerger({
+			prNumber: 12345,
+			prAuthor: 'testuser',
+			prCommitSha: 'abc123',
+			config: {
+				getBranchAlias: () => '5.8.0'
+			},
+			core
+		})
+		action.terminalBranch = 'main'
+
+		const filename = await action.writeComment({
+			branch: 'release-5.8.0',
+			issueNumber: 99999,  // Original PR was fixing issue #99999
+			conflicts: 'file.js',
+			conflictIssueNumber: 11111,  // New conflict issue
+			conflictBranchName: 'merge-conflicts-11111-release-5-7-2-to-release-5-8-0'
+		})
+
+		cleanupIssueCommentFile(t)
+
+		const content = await readFile(filename, 'utf-8')
+
+		t.ok(content.includes('merge-conflicts-11111-release-5-7-2-to-release-5-8-0'),
+			'should use merge-conflicts branch name')
+		t.notOk(content.includes('issue-11111-pr-12345'),
+			'should not use old issue-* branch naming scheme')
+		t.notOk(content.includes('issue-99999-pr-12345'),
+			'should not use original PR issue number (99999)')
 	})
 })
 
