@@ -6080,39 +6080,38 @@ function checkEncoding(name) {
 /***/ 7937:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-const util = __nccwpck_require__(9023)
-const exec = util.promisify((__nccwpck_require__(5317).exec))
-const {writeFile} = __nccwpck_require__(1943)
-
-const github = __nccwpck_require__(3228)
-const context = github.context
-const { repository } = context.payload
-
-// If the event has a repository extract the attributes
-let repoOwnerParams = {}
-if (repository) {
-	repoOwnerParams = {
-		owner: repository.owner.login,
-		repo: repository.name
-	}
-}
+const Shell = __nccwpck_require__(1569)
+const GitHubClient = __nccwpck_require__(7570)
+const Git = __nccwpck_require__(8379)
 
 /**
- * Common operations actions will invoke upon an instance of an action
+ * Common operations actions will invoke upon an instance of an action.
+ *
+ * This class provides a template method pattern (run/runAction/onError)
+ * and convenience methods for git operations.
+ *
+ * New code should prefer using Shell, GitHubClient, and Git directly for
+ * cleaner dependency injection. BaseAction is maintained for backward
+ * compatibility with existing actions.
  */
 class BaseAction {
 
 	constructor() {
 		// Any contextual state can be added here (e.g. list of commits for a PR)
 		this.context = {}
-		// https://github.com/actions/toolkit/tree/main/packages/core#annotations
+
+		// Core is the foundation - logging and inputs
 		this.core = __nccwpck_require__(7484)
 
-		// Setup Octokit
-		const repoToken = this.core.getInput('repo-token')
-		if (repoToken) {
-			this.octokit = github.getOctokit(repoToken)
-		}
+		// Create component instances
+		this.shell = new Shell(this.core)
+		this.gh = new GitHubClient()
+		this.git = new Git(this.shell)
+
+		// Expose octokit for backward compatibility (lazy - accessed via gh)
+		Object.defineProperty(this, 'octokit', {
+			get: () => this.gh.octokit
+		})
 	}
 
 	/**
@@ -6144,29 +6143,23 @@ class BaseAction {
 	}
 
 	/**
-	 * Executes a command using FS.exec and performs logging and dry run logic.
+	 * Executes a command using shell and performs logging and dry run logic.
 	 *
 	 * @param cmd
-	 *
 	 * @returns {Promise<string>}
 	 */
 	async exec(cmd) {
-		if (this.core.getInput('dry-run')) {
-			this.core.info(`dry run: ${cmd}`)
-		} else {
-			this.core.info(`Running: ${cmd}`)
-			const { stdout, stderr } = await exec(cmd);
-			if (stderr) {
-				this.core.info(stderr)
-			}
-			return stdout.toString().trim()
-		}
+		return this.shell.exec(cmd)
 	}
 
+	/**
+	 * Executes a command, suppressing any errors.
+	 *
+	 * @param cmd
+	 * @returns {Promise<string|undefined>}
+	 */
 	async execQuietly(cmd) {
-		try {
-			return await this.exec(cmd)
-		} catch(e) {}
+		return this.shell.execQuietly(cmd)
 	}
 
 	/**
@@ -6179,13 +6172,12 @@ class BaseAction {
 	 * @returns {Promise}
 	 */
 	async execRest(apiFn, opts, label = '') {
-		if (this.octokit && repoOwnerParams) {
-			const allOptions = {...repoOwnerParams, ...opts}
-			this.core.debug(`Invoking octokit rest api ${label}: ${JSON.stringify(opts)}`)
-			return await apiFn(this.octokit.rest, allOptions)
-		} else {
-			throw new Error(`octokit is not initialized! Did the action specify the required 'repo-token'?`)
+		if (!this.octokit) {
+			throw new Error('octokit is not initialized! Did the action specify the required \'repo-token\'?')
 		}
+		const allOptions = { ...this.gh.repo, ...opts }
+		this.core.debug(`Invoking octokit rest api ${label}: ${JSON.stringify(opts)}`)
+		return await apiFn(this.octokit.rest, allOptions)
 	}
 
 	/**
@@ -6198,11 +6190,7 @@ class BaseAction {
 		if (this.context.commits) {
 			return this.context.commits
 		}
-		this.context.commits = await this.execRest(
-			(api, opts) => api.pulls.listCommits(opts),
-			{ pull_number: prNumber },
-			'Fetching commits for'
-		)
+		this.context.commits = await this.gh.fetchCommits(prNumber)
 		return this.context.commits
 	}
 
@@ -6215,23 +6203,15 @@ class BaseAction {
 	 * @returns {Promise<void>}
 	 */
 	async commit(message, author) {
-		// Write to a file to avoid escaping nightmares
-		await writeFile('.commitmsg', message)
-		let options = `--file=.commitmsg`
-		if (author) {
-			options += ` --author "${author.name} <${author.email}>"`
-		}
-		await this.exec(`git commit ${options}`)
-		await this.exec(`git push`)
+		return this.git.commit(message, author)
 	}
 
 	async createBranch(name, sha) {
-		await this.exec(`git checkout -b ${name} ${sha}`)
-		await this.exec(`git push --set-upstream origin ${name}`)
+		return this.git.createBranch(name, sha)
 	}
 
 	async deleteBranch(name) {
-		return this.execQuietly(`git push origin --delete ${name}`)
+		return this.git.deleteBranch(name)
 	}
 
 	async logError(e, prefix = 'Error Detected') {
@@ -6355,24 +6335,28 @@ const BRANCH_ISSUE_REGEX = /(\d{3,})/
  * 2. From the PR title
  * 3. From the branch name
  *
- * @param {BaseAction} action
+ * @param {Object} commits GitHub API response with commits
  * @param {Object} pullRequest from the event
  *
- * @returns {Promise<string>} The issue number
+ * @returns {string} The issue number
  */
-async function findIssueNumber({action, pullRequest}) {
+function findIssueNumber(commits, pullRequest) {
 
-	const { number: pull_number, title, head } = pullRequest
+	const { title, head } = pullRequest
 	const prBranch = head.ref
 
 	// First, Look at the commits
-	let issueNumber = extractFromCommits(await action.fetchCommits(pull_number))
+	let issueNumber = extractFromCommits(commits)
 
 	// Second, the PR title
-	if (!issueNumber) { search(title, 'PR title') }
+	if (!issueNumber) {
+		issueNumber = search(title, 'PR title')
+	}
 
 	// Finally, branch name
-	if (!issueNumber) { issueNumber = search(prBranch, 'branch name', BRANCH_ISSUE_REGEX) }
+	if (!issueNumber) {
+		issueNumber = search(prBranch, 'branch name', BRANCH_ISSUE_REGEX)
+	}
 
 	return issueNumber
 }
@@ -6408,16 +6392,236 @@ module.exports.extractFromCommits = extractFromCommits
 
 /***/ }),
 
+/***/ 8379:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const { writeFile } = __nccwpck_require__(1943)
+
+/**
+ * Git provides a clean interface for common git operations.
+ *
+ * Depends on Shell for executing git commands.
+ */
+class Git {
+
+	/**
+	 * @param {Object} shell - A Shell instance for executing commands
+	 */
+	constructor(shell) {
+		this.shell = shell
+	}
+
+	/**
+	 * Creates a git commit with optional author override.
+	 *
+	 * @param {string} message - The commit message
+	 * @param {Object} [author] - Optional author information
+	 * @param {string} [author.name] - Author name
+	 * @param {string} [author.email] - Author email
+	 * @returns {Promise<void>}
+	 */
+	async commit(message, author) {
+		// Write to a file to avoid escaping nightmares
+		await writeFile('.commitmsg', message)
+		let options = '--file=.commitmsg'
+		if (author) {
+			options += ` --author "${author.name} <${author.email}>"`
+		}
+		await this.shell.exec(`git commit ${options}`)
+		await this.shell.exec('git push')
+	}
+
+	/**
+	 * Creates a new branch and pushes it to origin.
+	 *
+	 * @param {string} name - The branch name
+	 * @param {string} sha - The commit SHA to branch from
+	 * @returns {Promise<void>}
+	 */
+	async createBranch(name, sha) {
+		await this.shell.exec(`git checkout -b ${name} ${sha}`)
+		await this.shell.exec(`git push --set-upstream origin ${name}`)
+	}
+
+	/**
+	 * Deletes a remote branch.
+	 *
+	 * @param {string} name - The branch name to delete
+	 * @returns {Promise<void>}
+	 */
+	async deleteBranch(name) {
+		return this.shell.execQuietly(`git push origin --delete ${name}`)
+	}
+
+	/**
+	 * Checks out a branch.
+	 *
+	 * @param {string} branch - The branch name
+	 * @returns {Promise<string>}
+	 */
+	async checkout(branch) {
+		return this.shell.exec(`git checkout ${branch}`)
+	}
+
+	/**
+	 * Pulls the latest changes.
+	 *
+	 * @returns {Promise<string>}
+	 */
+	async pull() {
+		return this.shell.exec('git pull')
+	}
+
+	/**
+	 * Merges a ref with the given options.
+	 *
+	 * @param {string} ref - The ref to merge (branch, sha, etc.)
+	 * @param {string} [options=''] - Git merge options
+	 * @returns {Promise<string>}
+	 */
+	async merge(ref, options = '') {
+		return this.shell.exec(`git merge ${ref} ${options}`.trim())
+	}
+
+	/**
+	 * Resets the working directory to match a ref.
+	 *
+	 * @param {string} ref - The ref to reset to
+	 * @param {string} [mode='--hard'] - Reset mode
+	 * @returns {Promise<string>}
+	 */
+	async reset(ref, mode = '--hard') {
+		return this.shell.exec(`git reset ${mode} ${ref}`)
+	}
+
+	/**
+	 * Configures git user identity.
+	 *
+	 * @param {string} name - User name
+	 * @param {string} email - User email
+	 * @returns {Promise<void>}
+	 */
+	async configureIdentity(name, email) {
+		await this.shell.exec(`git config user.email "${email}"`)
+		await this.shell.exec(`git config user.name "${name}"`)
+	}
+}
+
+module.exports = Git
+
+
+
+/***/ }),
+
+/***/ 7570:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const defaultGithub = __nccwpck_require__(3228)
+const defaultCore = __nccwpck_require__(7484)
+
+/**
+ * GitHubClient provides a clean interface for GitHub API operations.
+ *
+ * Dependencies are bound at construction time for clean usage and testability.
+ */
+class GitHubClient {
+
+	/**
+	 * @param {Object} options
+	 * @param {Object} [options.core] - The @actions/core module (for getInput)
+	 * @param {Object} [options.github] - The @actions/github module
+	 */
+	constructor({ core, github } = {}) {
+		this.core = core ?? defaultCore
+		this.github = github ?? defaultGithub
+		this._octokit = null
+	}
+
+	/**
+	 * Gets the authenticated Octokit instance, creating it lazily.
+	 *
+	 * @returns {Object} The Octokit instance
+	 */
+	get octokit() {
+		if (!this._octokit) {
+			const repoToken = this.core.getInput('repo-token')
+			if (!repoToken) {
+				throw new Error('repo-token input is required')
+			}
+			this._octokit = this.github.getOctokit(repoToken)
+		}
+		return this._octokit
+	}
+
+	/**
+	 * Gets the repository info from the GitHub context.
+	 *
+	 * @returns {Object} Object with owner and repo properties
+	 */
+	get repo() {
+		const { repository } = this.github.context.payload
+		return {
+			owner: repository.owner.login,
+			repo: repository.name
+		}
+	}
+
+	/**
+	 * Fetches the commits for a pull request.
+	 *
+	 * @param {number} prNumber - The pull request number
+	 * @returns {Promise<Object>} The commits response from GitHub API
+	 */
+	async fetchCommits(prNumber) {
+		return this.octokit.rest.pulls.listCommits({
+			...this.repo,
+			pull_number: prNumber
+		})
+	}
+
+	/**
+	 * Creates a GitHub issue.
+	 *
+	 * @param {Object} options
+	 * @param {string} options.title - Issue title
+	 * @param {number} [options.milestone] - Milestone number
+	 * @param {string[]} [options.labels] - Array of label names
+	 * @returns {Promise<Object>} The created issue response
+	 */
+	async createIssue({ title, milestone, labels }) {
+		return this.octokit.rest.issues.create({
+			...this.repo,
+			title,
+			milestone,
+			labels
+		})
+	}
+}
+
+module.exports = GitHubClient
+
+
+
+/***/ }),
+
 /***/ 8863:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 const configReader = __nccwpck_require__(2273)
 const findIssueNumber = __nccwpck_require__(8178)
 const BaseAction = __nccwpck_require__(7937)
+const Shell = __nccwpck_require__(1569)
+const GitHubClient = __nccwpck_require__(7570)
+const Git = __nccwpck_require__(8379)
 
 const mockCore = __nccwpck_require__(7089)
 
 module.exports = {
+	// ES6 classes
+	Shell,
+	GitHubClient,
+	Git,
+	// Existing exports
 	BaseAction,
 	configReader,
 	findIssueNumber,
@@ -6447,12 +6651,75 @@ function mockCore(options = {}) {
 		debug: msg => mockCore.debugMsgs.push(msg),
 		warning: msg => mockCore.warningMsgs.push(msg),
 		getInput: name => options.inputs && options.inputs[name],
-		setOutput: (name, value) => mockCore.outputs[name] = value
+		setOutput: (name, value) => mockCore.outputs[name] = value,
+		startGroup: label => mockCore.infoMsgs.push(`\n${label}\n===============================================\n`),
+		endGroup: () => {}
 	}
 	return mockCore
 }
 
 module.exports = mockCore
+
+/***/ }),
+
+/***/ 1569:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const util = __nccwpck_require__(9023)
+const execAsync = util.promisify((__nccwpck_require__(5317).exec))
+
+/**
+ * Shell provides a clean interface for executing shell commands with logging.
+ *
+ * Core is bound at construction time, eliminating the need to pass it on every call.
+ */
+class Shell {
+
+	/**
+	 * @param {Object} core - The @actions/core module (for logging and getInput)
+	 */
+	constructor(core) {
+		this.core = core
+	}
+
+	/**
+	 * Executes a shell command with logging.
+	 *
+	 * @param {string} cmd - The command to execute
+	 * @returns {Promise<string>} The trimmed stdout output
+	 */
+	async exec(cmd) {
+		const dryRun = this.core.getInput('dry-run')
+		if (dryRun) {
+			this.core.info(`dry run: ${cmd}`)
+			return
+		}
+		this.core.info(`Running: ${cmd}`)
+		const { stdout, stderr } = await execAsync(cmd)
+		if (stderr) {
+			this.core.info(stderr)
+		}
+		return stdout.toString().trim()
+	}
+
+	/**
+	 * Executes a shell command, suppressing any errors.
+	 *
+	 * @param {string} cmd - The command to execute
+	 * @returns {Promise<string|undefined>} The trimmed stdout output, or undefined if error
+	 */
+	async execQuietly(cmd) {
+		try {
+			return await this.exec(cmd)
+		} catch (e) {
+			// Intentionally swallow errors
+		}
+	}
+}
+
+module.exports = Shell
+
+
 
 /***/ }),
 
@@ -36063,53 +36330,87 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
-/***/ 5180:
+/***/ 1324:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 const { writeFile } = __nccwpck_require__(1943)
 
-const { findIssueNumber, configReader, BaseAction } = __nccwpck_require__(8863)
+const { findIssueNumber } = __nccwpck_require__(8863)
 const IssueResolver = __nccwpck_require__(6049)
-const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = __nccwpck_require__(9992)
+const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, ISSUE_COMMENT_FILENAME } = __nccwpck_require__(9992)
 
 /**
- * Invoked by the spider-merge-bot.yml GitHub Action Workflow
- * Runs with the node version shipped with `ubuntu-latest`
+ * Handles automatic merging of pull requests forward through the release chain.
  *
  * See the original issue for more details/links:
  * https://github.com/SpiderStrategies/Scoreboard/issues/42921
 */
-class AutoMergeAction extends BaseAction {
-
-
-	constructor(options = {}) {
-		super()
-		this.options = options
-		this.github = __nccwpck_require__(3228)
-	}
+class AutoMerger {
 
 	/**
-	 * State that is required for the output of the action, even if it is
-	 * skipped or fails prematurely.  Not in the constructor so tests can inject
-	 * the github context post construction.
+	 * @param {Object} options
+	 * @param {Object} options.pullRequest - The pull request from GitHub event
+	 * @param {Object} options.repository - The repository from GitHub event
+	 * @param {Object} options.config - The parsed merge-bot config
+	 * @param {number} options.prNumber - Pull request number
+	 * @param {string} options.prAuthor - GitHub username of the PR author
+	 * @param {string} options.prTitle - Title of the pull request
+	 * @param {string} options.prBranch - The head branch of the PR
+	 * @param {string} options.baseBranch - The base branch the PR was merged into
+	 * @param {string} options.prCommitSha - The SHA of the PR head commit
+	 * @param {Object} options.core - The @actions/core module for logging and outputs
+	 * @param {Object} options.shell - Shell instance for executing commands
+	 * @param {Object} options.gh - GitHubClient instance for GitHub API
+	 * @param {Object} options.git - Git instance for git operations
 	 */
-	async postConstruct() {
-		const {serverUrl, runId, repo} = this.github.context
+	constructor({
+		pullRequest,
+		repository,
+		config,
+		prNumber,
+		prAuthor,
+		prTitle,
+		prBranch,
+		baseBranch,
+		prCommitSha,
+		core,
+		shell,
+		gh,
+		git
+	}) {
+		// Business data
+		this.pullRequest = pullRequest
+		this.repository = repository
+		this.config = config
+		this.prNumber = prNumber
+		this.prAuthor = prAuthor
+		this.prTitle = prTitle
+		this.prBranch = prBranch
+		this.baseBranch = baseBranch
+		this.prCommitSha = prCommitSha
+
+		// Infrastructure
+		this.core = core
+		this.shell = shell
+		this.gh = gh
+		this.git = git
+
+		// Initialize URLs for status reporting
+		const { serverUrl, runId, repo } = this.gh.github.context
 		this.repoUrl = `${serverUrl}/${repo.owner}/${repo.repo}`
 		this.actionUrl = `${this.repoUrl}/actions/runs/${runId}`
 
-		// If an unexpected failure occurs linking to the action is good enough (for the slack footer)
-		// Merge conflicts will generate a more descriptive warning below.
-		this.core.setOutput('status-message', `<${this.actionUrl}|Action Run>`)
-		this.core.setOutput('status', 'success')
+		// State that will be populated during execution
+		this.terminalBranch = null
+		this.issueNumber = null
+		this.originalPrNumber = null
+		this.conflictBranch = null
+		this.issueUrl = null
+		this.statusMessage = null
 	}
 
-	async runAction() {
-
-		await this.postConstruct()
-
-		const {pullRequest} = this.options
-		if (!pullRequest.merged) {
+	async run() {
+		if (!this.pullRequest.merged) {
 			// There is no 'merged' activity type that can be specified in the workflow trigger.
 			// So checking if the PR was merged here and aborting the action is the best we can do
 			this.core.info('PR was closed without being merged, aborting...')
@@ -36119,47 +36420,32 @@ class AutoMergeAction extends BaseAction {
 		await this.initializeState()
 
 		if (!this.terminalBranch) {
-			this.core.info(`PR was against terminal branch, no merges required.`)
+			this.core.info('PR was against terminal branch, no merges required.')
 			return
 		}
 
-		this.issueNumber = await findIssueNumber({action: this, pullRequest})
+		const commits = await this.gh.fetchCommits(this.prNumber)
+		this.issueNumber = findIssueNumber(commits, this.pullRequest)
 
 		await this.runMerges()
 	}
 
 	async runMerges() {
-		const username = `Spider Merge Bot`
-		const userEmail = `merge-bot@spiderstrategies.com`
+		const username = 'Spider Merge Bot'
+		const userEmail = 'merge-bot@spiderstrategies.com'
 		this.core.info(`Assigning git identity to ${username} <${userEmail}>`)
-		await this.exec(`git config user.email "${userEmail}"`)
-		await this.exec(`git config user.name "${username}"`)
+		await this.git.configureIdentity(username, userEmail)
 
 		// Attempt to merge each specified branch
 		await this.executeMerges(this.config.mergeTargets)
 	}
 
-	/**
-	 * If the action fails, this method should be invoked and NOT
-	 * this.core.setFailed() directly.
-	 */
-	async onError(err) {
-		await super.onError(err);
-		// This is required for the slack integration, don't change it
-		this.core.setOutput('status', 'failure')
-	}
 
 	/**
-	 * Reads the config and the event, storing contextual information on this
-	 * action instance.
+	 * Initializes state needed for merging.
 	 */
 	async initializeState() {
-		const { configFile, prNumber, prBranch, prTitle, pullRequest = {}, baseBranch } = this.options
-		const { merge_commit_sha } = pullRequest
-
-		if (configFile) { // let tests bypass this
-			this.config = configReader(configFile, { baseBranch })
-		}
+		const { merge_commit_sha } = this.pullRequest
 
 		if (this.config && this.config.mergeTargets) {
 			this.terminalBranch = this.config.mergeTargets[this.config.mergeTargets.length - 1]
@@ -36167,9 +36453,9 @@ class AutoMergeAction extends BaseAction {
 			this.core.info(`terminal branch: ${this.terminalBranch}`)
 		}
 
-		const trimmedMessage = await this.exec(`git show -s --format=%B ${merge_commit_sha}`)
-		this.setOriginalPrNumber(prBranch, prNumber)
-		this.core.info(`PR title: ${prTitle}`)
+		const trimmedMessage = await this.shell.exec(`git show -s --format=%B ${merge_commit_sha}`)
+		this.setOriginalPrNumber(this.prBranch, this.prNumber)
+		this.core.info(`PR title: ${this.prTitle}`)
 		this.core.info(`Original PR Number: ${this.originalPrNumber}`)
 		this.core.info(`trimmedMessage: ${trimmedMessage}`)
 	}
@@ -36185,27 +36471,28 @@ class AutoMergeAction extends BaseAction {
 		this.core.info(`Merge Targets: ${mergeTargets}`)
 
 		let mergeCount = 0
-		for (; mergeCount < targetMergeCount; mergeCount++){
+		for (; mergeCount < targetMergeCount; mergeCount++) {
 			const branch = mergeTargets[mergeCount]
-			this.startGroup(`Merging into ${branch}...`)
+			this.core.startGroup(`Merging into ${branch}...`)
 
-			await this.exec(`git checkout ${branch}`)
+			await this.git.checkout(branch)
 			try {
-				if(!await this.merge({branch})) {
-					break;
+				if (!await this.merge({ branch })) {
+					break
 				}
 			} catch (e) {
-				await this.onError(e)
-				break;
+				this.core.error(e.message)
+				this.core.setFailed(e.message)
+				break
 			} finally {
-				this.endGroup()
+				this.core.endGroup()
 			}
 		}
 		const allMergesPassed = mergeCount === targetMergeCount
 
 		if (allMergesPassed) {
-			this.core.info(`All merges are complete`)
-			await this.deleteBranch(this.options.prBranch)
+			this.core.info('All merges are complete')
+			await this.git.deleteBranch(this.prBranch)
 		} else if (this.conflictBranch) {
 			this.generateMergeConflictWarning()
 		}
@@ -36215,16 +36502,11 @@ class AutoMergeAction extends BaseAction {
 	// This will be displayed in the warning annotation on the workflow run
 	// AND included in the slack message
 	generateMergeConflictWarning() {
-		const { prNumber} = this.options
 		// Slack is "special" https://api.slack.com/reference/surfaces/formatting#linking-urls
-		this.statusMessage = `<${this.repoUrl}/issues/${prNumber}|PR #${prNumber}> ` +
+		this.statusMessage = `<${this.repoUrl}/issues/${this.prNumber}|PR #${this.prNumber}> ` +
 			`<${this.issueUrl}|Issue> ` +
 			`<${this.actionUrl}|Action Run>`
 		this.core.warning(this.statusMessage)
-		// This becomes the footer in slack notifications
-		this.core.setOutput('status-message', this.statusMessage)
-		// This is used to detect error vs warning for slack notifications
-		this.core.setOutput('status', 'warning')
 	}
 
 	/**
@@ -36234,26 +36516,27 @@ class AutoMergeAction extends BaseAction {
 	 *     other branches true if the merge was successful or skipped false if
 	 *     there were conflicts
 	 */
-	async merge({branch,
+	async merge({
+		branch,
 		// Use "no fastforward" flag to make sure there are always changes to commit;
 		// otherwise, this will break when a new release branch has been created, but
 		// is still identical to the previous release branch. Example:
 		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
-		options = `--no-commit --no-ff`
+		options = '--no-commit --no-ff'
 	}) {
-		const { pullRequest, baseBranch, prNumber, prBranch } = this.options
-		const sha = pullRequest.head.sha // This is the commit that was just merged into the PRs base
-		const commitMessage = `auto-merge of ${sha} into \`${branch}\` from \`${prBranch}\` ` +
-			`triggered by (#${prNumber}) on \`${baseBranch}\``
+		// This is the commit that was just merged into the PRs base
+		const sha = this.pullRequest.head.sha
+		const commitMessage = `auto-merge of ${sha} into \`${branch}\` from \`${this.prBranch}\` ` +
+			`triggered by (#${this.prNumber}) on \`${this.baseBranch}\``
 
 		this.core.info(commitMessage)
 
 		let mergeResult
 		try {
-			await this.exec(`git pull`) // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
-			mergeResult = await this.exec(`git merge ${sha} ${options}`)
+			await this.git.pull() // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
+			mergeResult = await this.git.merge(sha, options)
 			this.core.info(mergeResult)
-		} catch(e) {
+		} catch (e) {
 			await this.handleConflicts(branch)
 			return false
 		}
@@ -36261,27 +36544,32 @@ class AutoMergeAction extends BaseAction {
 		// Already merged into this branch (not expected, but lets handle it (and just skip over))
 		const alreadyMerged = mergeResult.includes(UP_TO_DATE)
 		if (!alreadyMerged) {
-			const commits = await this.fetchCommits(this.options.prNumber)
+			const commits = await this.gh.fetchCommits(this.prNumber)
 			const lastCommit = commits.data.map(c => c.commit).pop()
-			await this.commit(commitMessage, lastCommit.author)
+			await this.git.commit(commitMessage, lastCommit.author)
 		}
 		return true
 	}
 
 	async handleConflicts(branch) {
-		const conflicts = await this.exec(`git diff --name-only --diff-filter=U`)
+		const conflicts = await this.shell.exec('git diff --name-only --diff-filter=U')
 		if (conflicts.length > 0) {
-			console.log(`Conflicts found:\n`, conflicts)
+			console.log('Conflicts found:\n', conflicts)
 			this.conflictBranch = branch
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
-			await this.exec(`git reset --hard ${branch}`) // must wipe out any local changes from merge
+			await this.git.reset(branch, '--hard') // must wipe out any local changes from merge
 
 			// Create merge-conflicts branch with encoded source and target
 			// Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
-			const sourceBranch = this.options.baseBranch
-			const encodedBranchName = this.createMergeConflictsBranchName(newIssueNumber, sourceBranch, branch)
-			await this.createBranch(encodedBranchName, this.options.prCommitSha)
-			await new IssueResolver(this).resolveIssues()
+			const encodedBranchName = this.createMergeConflictsBranchName(
+				newIssueNumber, this.baseBranch, branch)
+			await this.git.createBranch(encodedBranchName, this.prCommitSha)
+			await new IssueResolver({
+				prNumber: this.prNumber,
+				core: this.core,
+				shell: this.shell,
+				gh: this.gh
+			}).resolveIssues()
 		}
 	}
 
@@ -36297,26 +36585,23 @@ class AutoMergeAction extends BaseAction {
 		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-${normalizedSource}-to-${normalizedTarget}`
 	}
 
-	async createIssue({branch, conflicts}) {
+	async createIssue({ branch, conflicts }) {
 		const issueNumber = this.issueNumber
 		const branchObj = this.config.branches[branch] || {}
-		const title = `Merge${issueNumber ? ' #' + issueNumber : ''} (${this.options.prCommitSha.substring(0,9)}) into ${branch}`
+		const title = `Merge${issueNumber ? ' #' + issueNumber : ''} (${this.prCommitSha.substring(0, 9)}) into ${branch}`
 
 		// https://docs.github.com/en/rest/issues/issues#create-an-issue
-		const newIssueResponse = await this.execRest(
-			(api, opts) => api.issues.create(opts),
-			{
-				title,
-				milestone: branchObj.milestoneNumber,
-				labels: [`highest priority`, 'merge conflict']
-			},
-			'to create issue'
-		)
+		const newIssueResponse = await this.gh.createIssue({
+			title,
+			milestone: branchObj.milestoneNumber,
+			labels: ['highest priority', 'merge conflict']
+		})
+
 		const { number: conflictIssueNumber, html_url } = newIssueResponse.data
 		// Have to write comment and update after issue is created because
 		// we need to reference the issue number in the comment
-		const bodyFile = await this.writeComment({branch, issueNumber, conflicts, conflictIssueNumber})
-		await this.exec(`gh issue edit ${conflictIssueNumber} --body-file ${bodyFile} --add-assignee "${this.options.prAuthor}"`)
+		const bodyFile = await this.writeComment({ branch, issueNumber, conflicts, conflictIssueNumber })
+		await this.shell.exec(`gh issue edit ${conflictIssueNumber} --body-file ${bodyFile} --add-assignee "${this.prAuthor}"`)
 
 		this.issueUrl = html_url
 		this.core.info(`Created issue: ${html_url}`)
@@ -36340,30 +36625,28 @@ class AutoMergeAction extends BaseAction {
 	 *
 	 * @returns {Promise<string>}
 	 */
-	async writeComment({branch, issueNumber, conflicts, conflictIssueNumber}) {
+	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber }) {
 		const branchAlias = this.config.getBranchAlias(branch)
 		const newBranch = this.conflictsBranchName(issueNumber, branchAlias, this.originalPrNumber)
-		const { prNumber, prAuthor, prCommitSha } = this.options
-		const issueText = issueNumber ? `for issue #${issueNumber}` : ``
+		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		let lines = [`## Automatic Merge Failed`,
-			`@${prAuthor} changes from pull request #${prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
+			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
 			`Please submit a new pull request against the \`${branch}\` branch that includes the changes. `,
 			`The sooner you have a chance to do this the fewer conflicts you'll run into, so you may want to tackle this soon.`,
-			`### Details`,
-			`Run these commands to perform the merge, then open a new pull request against the \`${branch}\` branch.`,
-			`1. \`git fetch\``,
+			'### Details',
+			'Run these commands to perform the merge, then open a new pull request against the `' + branch + '` branch.',
+			'1. `git fetch`',
 			`1. \`git checkout --no-track -b ${newBranch} ${this.getOriginBranchForConflict(branch)}\``,
-			`1. \`git merge ${prCommitSha} -m "Merge commit ${prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git merge ${this.prCommitSha} -m "Merge commit ${this.prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"\``,
 			`1. \`git push --set-upstream origin ${newBranch}\``,
 			`1. \`createPR -b ${branch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
-			``,
-			`#### There were conflicts in these files:`,
-			conflicts.split(`\n`).map(c => `- ${c}`).join('\n') + `\n`
+			'',
+			'#### There were conflicts in these files:',
+			conflicts.split('\n').map(c => `- ${c}`).join('\n') + '\n'
 		]
 
-		const filename = '.issue-comment.txt'
-		await writeFile(filename, lines.join('\n'))
-		return filename
+		await writeFile(ISSUE_COMMENT_FILENAME, lines.join('\n'))
+		return ISSUE_COMMENT_FILENAME
 	}
 
 	/**
@@ -36384,7 +36667,201 @@ class AutoMergeAction extends BaseAction {
 	}
 }
 
-module.exports = AutoMergeAction
+module.exports = AutoMerger
+
+
+/***/ }),
+
+/***/ 3816:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = __nccwpck_require__(9992)
+const findCleanMergeRef = __nccwpck_require__(5991)
+
+/**
+ * Maintains branch-here pointers by updating them to the latest commit that
+ * successfully merged all the way to main.
+ *
+ * See the original issue for more details/links:
+ * https://github.com/SpiderStrategies/Scoreboard/issues/42921
+ */
+class BranchMaintainer {
+
+	/**
+	 * @param {Object} options
+	 * @param {Object} options.pullRequest - The pull request from the GitHub event
+	 * @param {Object} options.config - The parsed merge-bot config
+	 * @param {Object} options.core - The @actions/core module for logging
+	 * @param {Object} options.shell - Shell instance for executing commands
+	 */
+	constructor({ pullRequest, config, core, shell }) {
+		this.pullRequest = pullRequest
+		this.config = config
+		this.core = core
+		this.shell = shell
+		this.terminalBranch = this.determineTerminalBranch()
+	}
+
+	/**
+	 * Main entry point - handles all branch maintenance responsibilities:
+	 * 1. Delete merge-conflicts branches when conflict PRs are merged
+	 * 2. Maintain branch-here pointers (only if commits reached main)
+	 *
+	 * CRITICAL: Only maintains branch-here when commits have merged ALL THE WAY to main.
+	 * This ensures branch-here branches only include commits that have successfully
+	 * merged through the entire release chain, preventing users from inheriting
+	 * conflicts from earlier in the chain.
+	 *
+	 * @param {Object} options
+	 * @param {string} [options.automergeConflictBranch] - The branch where automerge
+	 *   encountered conflicts (undefined if automerge succeeded)
+	 */
+	async run({ automergeConflictBranch } = {}) {
+		if (!this.pullRequest.merged) {
+			this.core.info('PR was not merged, skipping branch maintenance')
+			return
+		}
+
+		// Always check if we need to delete a merge-conflicts branch, regardless of
+		// which branch the PR was merged into
+		await this.cleanupMergeConflictsBranch()
+
+		// Determine if commits reached the terminal branch
+		const isTerminalBranch = this.pullRequest.base.ref === this.terminalBranch
+		const automergeSucceeded = automergeConflictBranch === undefined
+		const commitsReachedMain = !isTerminalBranch && automergeSucceeded
+
+		if (commitsReachedMain) {
+			this.core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
+			await this.maintainBranches()
+		} else if (isTerminalBranch) {
+			this.core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
+		} else {
+			this.core.info(`Skipping branch maintenance: commits blocked at ${automergeConflictBranch}, have not reached main yet`)
+		}
+	}
+
+	/**
+	 * Determines the terminal branch (last branch in the merge chain, typically main).
+	 *
+	 * @returns {string} The name of the terminal branch
+	 */
+	determineTerminalBranch() {
+		const branches = Object.keys(this.config.branches)
+		return branches[branches.length - 1]
+	}
+
+	/**
+	 * Cleans up the merge-conflicts branch associated with a closed PR, if applicable.
+	 * Only acts on PRs that came from merge-conflicts branches. The issue number
+	 * is extracted directly from the branch name (e.g., merge-conflicts-12345).
+	 */
+	async cleanupMergeConflictsBranch() {
+		const match = /^merge-conflicts-(\d+)/
+			.exec(this.pullRequest.head.ref ?? '')
+		if (match) {
+			const issue = match[1]
+			await this.shell.execQuietly(
+				`git push origin --delete ${MB_BRANCH_FAILED_PREFIX}${issue}`)
+		}
+	}
+
+	/**
+	 * Maintains branch-here pointers for all branches in the config.
+	 */
+	async maintainBranches() {
+		const branches = Object.keys(this.config.branches)
+		this.core.info(`branches: ${JSON.stringify(branches)}`)
+		this.core.info(`terminal branch: ${this.terminalBranch}`)
+
+		for (const branch of branches) {
+			if (branch === this.terminalBranch) {
+				this.core.info(`At terminal branch (${branch}), no maintenance required`)
+				break
+			}
+			this.core.info(`\nMaintaining branch-here pointers for branch: ${branch}\n===============================================\n`)
+			try {
+				await this.shell.exec( `git checkout ${branch}`)
+				const downstreamChain = buildDownstreamBranchChain(this.config.mergeOperations, branch)
+				this.core.info(`Checking for conflicts from ${branch} through chain: ${downstreamChain.join(' -> ')}`)
+
+				const targetBranch = this.config.mergeOperations?.[branch]
+				await this.updateBranchHerePointer(branch, targetBranch, downstreamChain)
+			} catch (e) {
+				this.core.error(e)
+				throw e
+			}
+		}
+	}
+
+	/**
+	 * Updates the branch-here pointer for a given branch by finding a clean
+	 * merge point and fast-forwarding to it. If no clean merge point is found,
+	 * the branch-here pointer is left unchanged.
+	 *
+	 * @param {string} branch - The source branch being maintained
+	 * @param {string} targetBranch - The immediate target branch for this merge
+	 * @param {Array<string>} downstreamChain - The full chain of downstream branches
+	 *   to check for conflicts
+	 */
+	async updateBranchHerePointer(branch, targetBranch, downstreamChain) {
+		const cleanMergePoint = await findCleanMergeRef({
+			branch,
+			targetBranch,
+			allBranchesInChain: downstreamChain,
+			core: this.core,
+			shell: this.shell
+		})
+		if (cleanMergePoint) {
+			await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
+		} else {
+			this.core.info(`No clean merge point found for ${branch}, branch-here cannot be advanced`)
+		}
+	}
+
+	/**
+	 * Fast-forwards a branch to a new commit.
+	 *
+	 * @param {string} branch - The branch name to fast-forward
+	 * @param {string} cleanMergePoint - The commit/ref to fast-forward to
+	 */
+	async fastForward(branch, cleanMergePoint) {
+		const branchExists = await this.shell.exec(`git ls-remote --heads origin ${branch}`)
+		if (branchExists) {
+			await this.shell.exec(`git checkout ${branch}`)
+			await this.shell.exec(`git pull`)
+			await this.shell.exec(`git merge --ff-only ${cleanMergePoint}`)
+		} else {
+			await this.shell.exec(`git checkout -b ${branch} ${cleanMergePoint}`)
+		}
+		await this.shell.exec(`git push --set-upstream origin ${branch}`)
+	}
+}
+
+/**
+ * Builds the chain of downstream branches from a starting branch to the
+ * terminal branch. This chain is used to check for conflicts at all points
+ * in the merge path.
+ *
+ * @param {Object} mergeOperations - Map of branch -> targetBranch
+ * @param {string} startBranch - The branch to start building the chain from
+ * @returns {Array<string>} An ordered array of branch names representing
+ *   the downstream merge path (e.g., ['release/23.12', 'release/24.01', 'main'])
+ */
+function buildDownstreamBranchChain(mergeOperations, startBranch) {
+	const chain = []
+	let currentBranch = startBranch
+	while (mergeOperations[currentBranch]) {
+		const nextBranch = mergeOperations[currentBranch]
+		chain.push(nextBranch)
+		currentBranch = nextBranch
+	}
+	return chain
+}
+
+module.exports = BranchMaintainer
+module.exports.buildDownstreamBranchChain = buildDownstreamBranchChain
+
 
 
 /***/ }),
@@ -36398,11 +36875,13 @@ const UP_TO_DATE = `Already up to date.`
 // User-defined Constants; hardcoded for now, can override via config later
 const MB_BRANCH_FAILED_PREFIX = `merge-conflicts-`
 const MB_BRANCH_HERE_PREFIX = `branch-here-`
+const ISSUE_COMMENT_FILENAME = `.issue-comment.txt`
 
 module.exports = {
 	UP_TO_DATE,
 	MB_BRANCH_FAILED_PREFIX,
 	MB_BRANCH_HERE_PREFIX,
+	ISSUE_COMMENT_FILENAME
 }
 
 /***/ }),
@@ -36467,21 +36946,29 @@ function buildConflictPatterns(normalizedBranch, targetBranch, allBranchesInChai
  * CRITICAL: This function should only be called when commits have reached main,
  * as it's used to determine which commits are safe to include in branch-here pointers.
  *
- * @param {BaseAction} action An action instance that can be used to exec commands
- * @param {String} branch A branch to inspect (source branch)
- * @param {String} targetBranch The branch that this source branch merges into (optional for backwards compatibility)
- * @param {Array<String>} allBranchesInChain All branches from this branch to main, in order
+ * @param {Object} options
+ * @param {String} options.branch A branch to inspect (source branch)
+ * @param {String} [options.targetBranch] The branch that this source branch merges into (optional for backwards compatibility)
+ * @param {Array<String>} [options.allBranchesInChain] All branches from this branch to main, in order
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {Object} options.shell Shell instance for executing commands
  * @returns {Promise<string>} The ref (branch name or commit) that represents
  * the commit in the history where we know there are no pending merge conflicts.
  * If null, that indicates the branch-here branch can not be advanced any further
  */
-async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChain = []) {
+async function findCleanMergeRef({
+	branch,
+	targetBranch,
+	allBranchesInChain = [],
+	core,
+	shell
+}) {
 	// topo-order so parent commits are grouped w/ their children
 	const gitLogCmd = `git log` +
 		` origin/${MB_BRANCH_HERE_PREFIX}${branch}...origin/${branch}` + // all commits since last branch-here update
 		` --pretty=format:"%H %d" --topo-order` // %d to see refs
 
-	const history = (await action.exec(gitLogCmd)).split('\n')
+	const history = (await shell.exec(gitLogCmd)).split('\n')
 
 	const normalizedBranch = branch.replace(/\./g, '-')
 	const conflictPatterns = buildConflictPatterns(normalizedBranch, targetBranch, allBranchesInChain)
@@ -36500,7 +36987,13 @@ async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChai
 		return conflictPatterns.some(pattern => isRelevantConflict(line, pattern))
 	})
 
-	return await determineCleanMergePoint(action, branch, reversedHistory, conflictIdx)
+	return await determineCleanMergePoint({
+		branch,
+		reversedHistory,
+		conflictIdx,
+		core,
+		shell
+	})
 }
 
 
@@ -36513,13 +37006,21 @@ async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChai
  * 2. Conflicts too close to current branch-here: cannot advance (returns null)
  * 3. Conflicts found with safe distance: advance to most recent valid ancestor before conflicts
  *
- * @param {BaseAction} action An action instance that can be used to exec commands
- * @param {String} branch The branch being maintained
- * @param {Array<String>} reversedHistory Git log history with oldest commits first
- * @param {Number} conflictIdx Index of first conflict in reversedHistory, or -1 if none
+ * @param {Object} options
+ * @param {String} options.branch The branch being maintained
+ * @param {Array<String>} options.reversedHistory Git log history with oldest commits first
+ * @param {Number} options.conflictIdx Index of first conflict in reversedHistory, or -1 if none
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {Object} options.shell Shell instance for executing commands
  * @returns {Promise<string|null>} The ref to advance to, or null if cannot advance
  */
-async function determineCleanMergePoint(action, branch, reversedHistory, conflictIdx) {
+async function determineCleanMergePoint({
+	branch,
+	reversedHistory,
+	conflictIdx,
+	core,
+	shell
+}) {
 	if (conflictIdx === -1) {
 		return `origin/${branch}`
 	}
@@ -36532,7 +37033,7 @@ async function determineCleanMergePoint(action, branch, reversedHistory, conflic
 
 	// Commits that came before the first merge-conflicts-* branch
 	const commits = reversedHistory.splice(0, conflictIdx).map(commit => commit.split(' ')[0])
-	return await findValidAncestor(action, commits, branch)
+	return await findValidAncestor({ commits, branch, core, shell })
 }
 
 /**
@@ -36570,24 +37071,26 @@ function isRelevantConflict(line, relevantConflictPattern) {
  * Finds the most recent commit in the provided list that is a valid ancestor
  * of the branch-here branch (can be fast-forwarded).
  *
- * @param {BaseAction} action An action instance that can be used to exec commands
- * @param {String[]} commits Array of commit hashes to search through
- * @param {String} branch The branch being maintained
+ * @param {Object} options
+ * @param {String[]} options.commits Array of commit hashes to search through
+ * @param {String} options.branch The branch being maintained
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {Object} options.shell Shell instance for executing commands
  * @returns {Promise<string|undefined>} The commit hash of a valid ancestor,
  *          or undefined if none found
  */
-async function findValidAncestor(action, commits, branch) {
+async function findValidAncestor({ commits, branch, core, shell }) {
 	let validCommit
 	let searching = true
 
 	while (searching && commits.length) {
 		const candidateCommit = commits.pop()
 		try {
-			await action.exec(`git merge-base --is-ancestor origin/${MB_BRANCH_HERE_PREFIX}${branch} ${candidateCommit}`)
+			await shell.exec(`git merge-base --is-ancestor origin/${MB_BRANCH_HERE_PREFIX}${branch} ${candidateCommit}`)
 			validCommit = candidateCommit
 			searching = false
 		} catch (e) {
-			action.core.info(`${candidateCommit} was not a valid ancestor for origin/${MB_BRANCH_HERE_PREFIX}${branch}, continuing search...`)
+			core.info(`${candidateCommit} was not a valid ancestor for origin/${MB_BRANCH_HERE_PREFIX}${branch}, continuing search...`)
 		}
 	}
 
@@ -36595,10 +37098,7 @@ async function findValidAncestor(action, commits, branch) {
 }
 
 module.exports = findCleanMergeRef
-module.exports.buildConflictPatterns = buildConflictPatterns
-module.exports.determineCleanMergePoint = determineCleanMergePoint
 module.exports.isRelevantConflict = isRelevantConflict
-module.exports.findValidAncestor = findValidAncestor
 
 
 /***/ }),
@@ -36606,13 +37106,23 @@ module.exports.findValidAncestor = findValidAncestor
 /***/ 6049:
 /***/ ((module) => {
 
+/**
+ * Closes issues that are referenced with GitHub keywords in commit messages.
+ */
 class IssueResolver {
 
 	/**
-	 * @param {AutoMergeAction} action
+	 * @param {Object} options
+	 * @param {number} options.prNumber - The pull request number
+	 * @param {Object} options.core - The @actions/core module for logging
+	 * @param {Object} options.shell - Shell instance for executing commands
+	 * @param {Object} options.gh - GitHubClient instance for GitHub API
 	 */
-	constructor(action) {
-		this.action = action
+	constructor({ prNumber, core, shell, gh }) {
+		this.prNumber = prNumber
+		this.core = core
+		this.shell = shell
+		this.gh = gh
 	}
 
 	/**
@@ -36623,9 +37133,9 @@ class IssueResolver {
 		await this._loadCommitMessages()
 		for (let issueNumber of this.getFixedIssues()) {
 			// https://github.com/SpiderStrategies/Scoreboard/issues/48570
-			this.action.core.info(`Closing issue referenced in commits: ${issueNumber}`)
+			this.core.info(`Closing issue referenced in commits: ${issueNumber}`)
 			// GH API works great here (couldn't get ocktokit to work)
-			await this.action.exec(`gh issue close ${issueNumber}`)
+			await this.shell.exec(`gh issue close ${issueNumber}`)
 		}
 	}
 
@@ -36637,7 +37147,7 @@ class IssueResolver {
 		// https://docs.github.com/en/issues/tracking-your-work-with-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword
 		const rex = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)(?:[\s\w\/-]+#(\d+))/gi
 		this.commitMessages.forEach(m => {
-			this.action.core.debug(`Extracting issue numbers from commit message: ${m}`)
+			this.core.debug(`Extracting issue numbers from commit message: ${m}`)
 			const matches = m.matchAll(rex)
 			if (matches) {
 				for (const match of matches) {
@@ -36651,188 +37161,13 @@ class IssueResolver {
 	}
 
 	async _loadCommitMessages() {
-		const commits = await this.action.fetchCommits(this.action.prNumber)
+		const commits = await this.gh.fetchCommits(this.prNumber)
 		this.commitMessages = commits.data.map(c => c.commit.message)
-		this.action.core.info(`Commit messages are: ${this.commitMessages}`)
+		this.core.info(`Commit messages are: ${this.commitMessages}`)
 	}
 }
 
 module.exports = IssueResolver
-
-
-/***/ }),
-
-/***/ 7517:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
-
-const { findIssueNumber, configReader, BaseAction } = __nccwpck_require__(8863)
-const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = __nccwpck_require__(9992)
-const findCleanMergeRef = __nccwpck_require__(5991)
-
-/**
- * Invoked by the spider-merge-bot.yml GitHub Action Workflow
- * Runs with the node version shipped with `ubuntu-latest`
- *
- * See the original issue for more details/links:
- * https://github.com/SpiderStrategies/Scoreboard/issues/42921
-*/
-class BranchMaintainerAction extends BaseAction {
-
-	constructor(options = {}) {
-		super()
-		this.options = options
-		this.github = __nccwpck_require__(3228)
-	}
-
-	/**
-	 * State that is required for the output of the action, even if it is
-	 * skipped or fails prematurely.  Not in the constructor so tests can inject
-	 * the github context post construction.
-	 */
-	async postConstruct() {
-		const {serverUrl, runId, repo} = this.github.context
-		this.repoUrl = `${serverUrl}/${repo.owner}/${repo.repo}`
-		this.actionUrl = `${this.repoUrl}/actions/runs/${runId}`
-
-		// If an unexpected failure occurs linking to the action is good enough (for the slack footer)
-		// Merge conflicts will generate a more descriptive warning below.
-		this.core.setOutput('status-message', `<${this.actionUrl}|Action Run>`)
-		this.core.setOutput('status', 'success')
-	}
-
-	/**
-	 * Preconditions:
-	 * 1. The issue is tagged with `merge-conflict`
-	 * 2. The issue is closed.
-	 *
-	 * Given a closed issue, delete it's merge-conflict branch and initiate
-	 * branch maintenance.
-	 */
-	async runAction() {
-		await this.postConstruct()
-		await this.readConfig()
-		await this.deleteBranch()
-		await this.maintainBranches()
-	}
-
-	async deleteBranch() {
-		// Only delete this branch if it's a merge-conflict branch
-		const branch = this.options.pullRequest.head.ref || ''
-		const regex = /^merge-conflicts-\d+/.exec(branch)
-
-		if (regex?.length) {
-			// Conflicts PR was just closed. Extract the "fixes issue" from this pull request
-			const issue = await findIssueNumber({action: this, pullRequest: this.options.pullRequest})
-			if (issue) {
-				await super.deleteBranch(MB_BRANCH_FAILED_PREFIX + issue)
-			}
-		}
-	}
-
-	/**
-	 * Reads the config and the event, storing contextual information on this
-	 * action instance.
-	 */
-	async readConfig() {
-		const { configFile, baseBranch } = this.options
-		if (configFile) { // let tests bypass this
-			this.config = configReader(configFile, { baseBranch })
-		}
-	}
-
-	async maintainBranches() {
-		const branches = Object.keys(this.config.branches)
-		this.terminalBranch = branches[branches.length - 1]
-		this.core.info(`branches: ${JSON.stringify(branches)}`)
-		this.core.info(`terminal branch: ${this.terminalBranch}`)
-
-		for (const branch of branches) {
-			if (branch === this.terminalBranch) {
-				this.core.info(`At terminal branch (${branch}), no maintenance required`)
-				break
-			}
-			this.startGroup(`Maintaining branch-here pointers for branch: ${branch}`)
-			try {
-				await this.exec(`git checkout ${branch}`)
-				const downstreamChain = this.buildDownstreamBranchChain(branch)
-				this.core.info(`Checking for conflicts from ${branch} through chain: ${downstreamChain.join(' -> ')}`)
-
-				const targetBranch = this.config.mergeOperations?.[branch]
-				await this.updateBranchHerePointer(branch, targetBranch, downstreamChain)
-			} catch (e) {
-				await this.onError(e)
-				break
-			}finally {
-				this.endGroup()
-			}
-		}
-	}
-
-	/**
-	 * Builds the chain of downstream branches from a starting branch to the
-	 * terminal branch. This chain is used to check for conflicts at all points
-	 * in the merge path.
-	 *
-	 * @param {string} startBranch - The branch to start building the chain from
-	 * @returns {Array<string>} An ordered array of branch names representing
-	 *   the downstream merge path (e.g., ['release/23.12', 'release/24.01', 'main'])
-	 */
-	buildDownstreamBranchChain(startBranch) {
-		const chain = []
-		let currentBranch = startBranch
-		while (this.config.mergeOperations[currentBranch]) {
-			const nextBranch = this.config.mergeOperations[currentBranch]
-			chain.push(nextBranch)
-			currentBranch = nextBranch
-		}
-		return chain
-	}
-
-	/**
-	 * Updates the branch-here pointer for a given branch by finding a clean
-	 * merge point and fast-forwarding to it. If no clean merge point is found,
-	 * the branch-here pointer is left unchanged.
-	 *
-	 * @param {string} branch - The source branch being maintained
-	 * @param {string} targetBranch - The immediate target branch for this merge
-	 * @param {Array<string>} downstreamChain - The full chain of downstream branches
-	 *   to check for conflicts
-	 */
-	async updateBranchHerePointer(branch, targetBranch, downstreamChain) {
-		const cleanMergePoint = await findCleanMergeRef(this, branch, targetBranch, downstreamChain)
-		if (cleanMergePoint) {
-			await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
-		} else {
-			this.core.info(`No clean merge point found for ${branch}, branch-here cannot be advanced`)
-		}
-	}
-
-	/**
-	 * The action failed, report it.
-	 */
-	async onError(err) {
-		await super.onError(err)
-		// Needed for slack integration
-		this.core.setOutput('status', 'failure')
-	}
-
-	/**
-	 * Fast-forwards a branch to a new commit
-	 */
-	async fastForward(branch, cleanMergePoint) {
-		const branchExists = await this.exec(`git ls-remote --heads origin ${branch}`)
-		if (branchExists) {
-			await this.exec(`git checkout ${branch}`)
-			await this.exec(`git pull`)
-			await this.exec(`git merge --ff-only ${cleanMergePoint}`)
-		} else {
-			await this.exec(`git checkout -b ${branch} ${cleanMergePoint}`)
-		}
-		await this.exec(`git push --set-upstream origin ${branch}`)
-	}
-}
-
-module.exports = BranchMaintainerAction
 
 
 /***/ }),
@@ -38840,9 +39175,9 @@ var __webpack_exports__ = {};
 const core = __nccwpck_require__(7484)
 const github = __nccwpck_require__(3228)
 
-const AutoMergeAction = __nccwpck_require__(5180)
-const BranchMaintainerAction = __nccwpck_require__(7517)
-const { configReader } = __nccwpck_require__(8863)
+const AutoMerger = __nccwpck_require__(1324)
+const BranchMaintainer = __nccwpck_require__(3816)
+const { configReader, Shell, GitHubClient, Git } = __nccwpck_require__(8863)
 
 const { pull_request, repository } = github.context.payload
 const configFile = core.getInput('config-file', { required: true })
@@ -38850,85 +39185,63 @@ const configFile = core.getInput('config-file', { required: true })
 const { number: prNumber, title, base, head, user } = pull_request
 
 async function run() {
-	// Build options for both phases
-	const options = {
-		configFile,
+	// Read config once for both phases
+	const config = configReader(configFile, { baseBranch: base.ref })
+
+	// Create infrastructure components (shared across phases)
+	const shell = new Shell(core)
+	const gh = new GitHubClient({ core, github })
+	const git = new Git(shell)
+
+	// Phase 1: Merge forward
+	const automerger = new AutoMerger({
 		pullRequest: pull_request,
 		repository,
+		config,
 		prNumber,
 		prAuthor: user.login,
 		prTitle: title,
 		prBranch: head.ref,
 		baseBranch: base.ref,
 		prCommitSha: head.sha,
-	}
-
-	// Determine terminal branch to know when commits reach the end
-	const config = configReader(configFile, { baseBranch: base.ref })
-	const terminalBranch = determineTerminalBranch(config)
-
-	// Phase 1: Merge forward
-	const automerge = new AutoMergeAction(options)
-	await automerge.run()
+		core,
+		shell,
+		gh,
+		git
+	})
+	await automerger.run()
 
 	// Phase 2: Maintain branch-here pointers
-	await maintainBranchHerePointers(automerge, terminalBranch)
+	const maintainer = new BranchMaintainer({
+		pullRequest: pull_request,
+		config,
+		core,
+		shell
+	})
+	await maintainer.run({ automergeConflictBranch: automerger.conflictBranch })
+
+	// Set final status based on automerge phase (orchestrator owns outputs)
+	setFinalStatus(automerger)
 }
 
 /**
- * Determines the terminal branch (last branch in the merge chain, typically main).
+ * Sets the final status outputs based on the automerge phase.
+ * The orchestrator owns these outputs to prevent phases from clobbering each other.
  *
- * @param {Object} config The configuration object containing branch definitions
- * @returns {string} The name of the terminal branch
+ * @param {AutoMerger} automerger The automerger instance
  */
-function determineTerminalBranch(config) {
-	const branches = Object.keys(config.branches)
-	return branches[branches.length - 1]
-}
-
-/**
- * Maintains branch-here pointers by updating them to the latest commit that
- * successfully merged all the way to main.
- *
- * CRITICAL: Only runs when commits have merged ALL THE WAY to main.
- * This ensures branch-here branches only include commits that have successfully
- * merged through the entire release chain, preventing users from inheriting
- * conflicts from earlier in the chain.
- *
- * Run conditions:
- * 1. PR was merged directly to main (terminal branch)
- * 2. Conflict resolution PR merged to main
- * 3. Automerge completed successfully all the way to main
- *
- * @param {AutoMergeAction} automerge The automerge action instance
- * @param {string} terminalBranch The terminal branch (typically main)
- */
-async function maintainBranchHerePointers(automerge, terminalBranch) {
-	if (!pull_request.merged) {
-		core.info('PR was not merged, skipping branch maintenance')
-		return
-	}
-
-	const isTerminalBranch = base.ref === terminalBranch
-	const automergeSucceeded = automerge.conflictBranch === undefined
-	const commitsReachedMain = !isTerminalBranch && automergeSucceeded
-
-	if (commitsReachedMain) {
-		core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
-		const maintainer = new BranchMaintainerAction({
-			configFile,
-			pullRequest: pull_request,
-		})
-		await maintainer.run()
-	} else if (isTerminalBranch) {
-		core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
+function setFinalStatus(automerger) {
+	if (automerger.conflictBranch) {
+		// Automerge had conflicts - set warning status
+		core.setOutput('status', 'warning')
+		core.setOutput('status-message', automerger.statusMessage)
 	} else {
-		core.info(`Skipping branch maintenance: commits blocked at ${automerge.conflictBranch}, have not reached main yet`)
+		core.setOutput('status', 'success')
+		core.setOutput('status-message', `<${automerger.actionUrl}|Action Run>`)
 	}
 }
 
 run()
-
 
 module.exports = __webpack_exports__;
 /******/ })()
