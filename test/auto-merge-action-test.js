@@ -474,7 +474,7 @@ tap.test('createIssue', async t => {
 tap.test('writeComment', async t => {
 	t.test('generates complete conflict resolution instructions', async t => {
 		const core = mockCore({})
-		const { readFile } = require('fs/promises')
+		const { readFile, unlink } = require('fs/promises')
 
 		const action = new TestAutoMerger({
 			prNumber: 12345,
@@ -499,6 +499,15 @@ tap.test('writeComment', async t => {
 			conflictIssueNumber: 99999
 		})
 
+		// Ensure cleanup happens even if assertions fail
+		t.teardown(async () => {
+			try {
+				await unlink(filename)
+			} catch (e) {
+				// File may not exist, that's okay
+			}
+		})
+
 		t.equal(filename, '.issue-comment.txt', 'should return filename')
 
 		const content = await readFile(filename, 'utf-8')
@@ -519,7 +528,7 @@ tap.test('writeComment', async t => {
 
 	t.test('omits branch-here for terminal branch conflicts', async t => {
 		const core = mockCore({})
-		const { readFile } = require('fs/promises')
+		const { readFile, unlink } = require('fs/promises')
 
 		const action = new TestAutoMerger({
 			prCommitSha: 'abc123',
@@ -538,6 +547,15 @@ tap.test('writeComment', async t => {
 			conflictIssueNumber: 333
 		})
 
+		// Ensure cleanup happens even if assertions fail
+		t.teardown(async () => {
+			try {
+				await unlink(filename)
+			} catch (e) {
+				// File may not exist, that's okay
+			}
+		})
+
 		const content = await readFile(filename, 'utf-8')
 
 		t.ok(content.includes('origin/main'), 'should use origin/main for terminal branch')
@@ -546,7 +564,7 @@ tap.test('writeComment', async t => {
 
 	t.test('handles missing issue number in PR', async t => {
 		const core = mockCore({})
-		const { readFile } = require('fs/promises')
+		const { readFile, unlink } = require('fs/promises')
 
 		const action = new TestAutoMerger({
 			prNumber: 777,
@@ -564,6 +582,15 @@ tap.test('writeComment', async t => {
 			issueNumber: null,  // No issue linked to PR
 			conflicts: 'test.js',
 			conflictIssueNumber: 888
+		})
+
+		// Ensure cleanup happens even if assertions fail
+		t.teardown(async () => {
+			try {
+				await unlink(filename)
+			} catch (e) {
+				// File may not exist, that's okay
+			}
 		})
 
 		const content = await readFile(filename, 'utf-8')
