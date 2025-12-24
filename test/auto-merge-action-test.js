@@ -253,6 +253,327 @@ tap.test('run', async t => {
 	})
 })
 
+tap.test('handleConflicts', async t => {
+	t.test('creates issue and merge-conflicts branch when conflicts detected', async t => {
+		const core = mockCore({})
+		const shellCommands = []
+		const gitCommands = []
+		let issueCreated = false
+
+		const mockShell = {
+			async exec(cmd) {
+				shellCommands.push(cmd)
+				if (cmd.startsWith('git diff --name-only')) {
+					return 'src/file1.js\nsrc/file2.js'
+				}
+				return ''
+			}
+		}
+
+		const mockGit = {
+			async reset(branch, flag) {
+				gitCommands.push(`reset ${branch} ${flag}`)
+			},
+			async createBranch(branchName, sha) {
+				gitCommands.push(`createBranch ${branchName} ${sha}`)
+			}
+		}
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async createIssue(options) {
+				issueCreated = true
+				t.equal(options.title, 'Merge #12345 (abc123456) into release-5.8', 'should have correct title')
+				t.ok(options.labels.includes('merge conflict'), 'should include merge conflict label')
+				t.ok(options.labels.includes('highest priority'), 'should include highest priority label')
+				t.equal(options.milestone, 23, 'should use milestone from config')
+				return { data: { number: 68586, html_url: 'https://github.com/sample/repo/issues/68586' } }
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test', email: 'test@example.com' },
+							message: 'Test commit'
+						}
+					}]
+				}
+			}
+		}
+
+		const action = new TestAutoMerger({
+			prNumber: 999,
+			prAuthor: 'testdev',
+			prCommitSha: 'abc123456789',
+			baseBranch: 'release-5.7',
+			config: {
+				branches: {
+					'release-5.8': { milestoneNumber: 23 }
+				},
+				getBranchAlias: (branch) => branch
+			},
+			core,
+			shell: mockShell,
+			git: mockGit,
+			gh: mockGh,
+			conflictBranch: null
+		})
+		action.issueNumber = 12345
+
+		await action.handleConflicts('release-5.8')
+
+		t.ok(issueCreated, 'should create GitHub issue')
+		t.equal(action.conflictBranch, 'release-5.8', 'should set conflictBranch')
+		t.ok(gitCommands.find(c => c.includes('reset release-5.8 --hard')), 'should reset branch')
+		t.ok(gitCommands.find(c => c.includes('createBranch merge-conflicts-68586-release-5-7-to-release-5-8 abc123456789')),
+			'should create merge-conflicts branch with encoded name')
+		// Note: IssueResolver.resolveIssues() is tested separately in issue-resolver-test.js
+	})
+
+	t.test('skips when no conflicts found', async t => {
+		const core = mockCore({})
+		const gitCommands = []
+
+		const mockShell = {
+			async exec(cmd) {
+				if (cmd.startsWith('git diff --name-only')) {
+					return ''  // No conflicts
+				}
+				return ''
+			}
+		}
+
+		const mockGit = {
+			async reset(branch, flag) {
+				gitCommands.push(`reset ${branch} ${flag}`)
+			}
+		}
+
+		const action = new TestAutoMerger({
+			core,
+			shell: mockShell,
+			git: mockGit,
+			conflictBranch: null
+		})
+
+		await action.handleConflicts('release-5.8')
+
+		t.equal(gitCommands.length, 0, 'should not call git reset when no conflicts')
+		t.notOk(action.conflictBranch, 'should not set conflictBranch when no conflicts')
+	})
+})
+
+tap.test('createIssue', async t => {
+	t.test('creates issue with proper metadata and assigns to PR author', async t => {
+		const core = mockCore({})
+		const shellCommands = []
+		let createdIssue
+
+		const mockShell = {
+			async exec(cmd) {
+				shellCommands.push(cmd)
+				return ''
+			}
+		}
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async createIssue(options) {
+				createdIssue = options
+				return {
+					data: {
+						number: 99999,
+						html_url: 'https://github.com/sample/repo/issues/99999'
+					}
+				}
+			}
+		}
+
+		const action = new TestAutoMerger({
+			prNumber: 555,
+			prAuthor: 'johndoe',
+			prCommitSha: 'def456789abc',
+			config: {
+				branches: {
+					'main': { milestoneNumber: 42 }
+				},
+				getBranchAlias: () => 'Main'
+			},
+			core,
+			shell: mockShell,
+			gh: mockGh
+		})
+		action.issueNumber = 888
+		action.originalPrNumber = 555
+
+		const newIssueNumber = await action.createIssue({
+			branch: 'main',
+			conflicts: 'file1.js\nfile2.js'
+		})
+
+		t.equal(newIssueNumber, 99999, 'should return new issue number')
+		t.equal(createdIssue.title, 'Merge #888 (def456789) into main', 'should include issue number and short sha in title')
+		t.ok(createdIssue.labels.includes('merge conflict'), 'should have merge conflict label')
+		t.ok(createdIssue.labels.includes('highest priority'), 'should have highest priority label')
+		t.equal(createdIssue.milestone, 42, 'should use milestone from config')
+
+		const editCommand = shellCommands.find(cmd => cmd.includes('gh issue edit'))
+		t.ok(editCommand, 'should edit issue to add body and assignee')
+		t.ok(editCommand.includes('--add-assignee "johndoe"'), 'should assign to PR author')
+		t.equal(action.issueUrl, 'https://github.com/sample/repo/issues/99999', 'should set issueUrl')
+	})
+
+	t.test('handles missing milestone gracefully', async t => {
+		const core = mockCore({})
+		let createdIssue
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async createIssue(options) {
+				createdIssue = options
+				return { data: { number: 777, html_url: 'https://github.com/sample/repo/issues/777' } }
+			}
+		}
+
+		const action = new TestAutoMerger({
+			config: {
+				branches: {
+					'release-5.9': {}  // No milestone
+				},
+				getBranchAlias: () => '5.9'
+			},
+			core,
+			shell: { async exec() { return '' } },
+			gh: mockGh
+		})
+
+		await action.createIssue({ branch: 'release-5.9', conflicts: 'file.js' })
+
+		t.equal(createdIssue.milestone, undefined, 'should handle missing milestone')
+	})
+})
+
+tap.test('writeComment', async t => {
+	t.test('generates complete conflict resolution instructions', async t => {
+		const core = mockCore({})
+		const { readFile } = require('fs/promises')
+
+		const action = new TestAutoMerger({
+			prNumber: 12345,
+			prAuthor: 'bobsmith',
+			prCommitSha: 'xyz789abc123',
+			baseBranch: 'release-5.7',
+			config: {
+				mergeTargets: ['release-5.8', 'main'],
+				getBranchAlias: (branch) => branch === 'release-5.8' ? '5.8' : 'main'
+			},
+			core
+		})
+		action.issueNumber = 54321
+		action.originalPrNumber = 12345
+		action.terminalBranch = 'main'
+		action.actionUrl = 'https://github.com/sample/repo/actions/runs/123456'
+
+		const filename = await action.writeComment({
+			branch: 'release-5.8',
+			issueNumber: 54321,
+			conflicts: 'src/app.js\nsrc/config.js',
+			conflictIssueNumber: 99999
+		})
+
+		t.equal(filename, '.issue-comment.txt', 'should return filename')
+
+		const content = await readFile(filename, 'utf-8')
+
+		t.ok(content.includes('## Automatic Merge Failed'), 'should have failure header')
+		t.ok(content.includes('@bobsmith'), 'should mention PR author')
+		t.ok(content.includes('pull request #12345'), 'should reference original PR')
+		t.ok(content.includes('for issue #54321'), 'should reference issue number')
+		t.ok(content.includes('`release-5.8`'), 'should mention target branch')
+		t.ok(content.includes('git fetch'), 'should include git fetch command')
+		t.ok(content.includes('issue-54321-pr-12345-conflicts-5.8'), 'should include new branch name')
+		t.ok(content.includes('git merge xyz789abc123'), 'should include merge command with sha')
+		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
+		t.ok(content.includes('- src/app.js'), 'should list first conflict file')
+		t.ok(content.includes('- src/config.js'), 'should list second conflict file')
+		t.ok(content.includes('origin/branch-here-release-5.8'), 'should use branch-here for non-terminal branch')
+	})
+
+	t.test('omits branch-here for terminal branch conflicts', async t => {
+		const core = mockCore({})
+		const { readFile } = require('fs/promises')
+
+		const action = new TestAutoMerger({
+			prCommitSha: 'abc123',
+			config: {
+				getBranchAlias: () => 'main'
+			},
+			core
+		})
+		action.terminalBranch = 'main'
+		action.originalPrNumber = 111
+
+		const filename = await action.writeComment({
+			branch: 'main',
+			issueNumber: 222,
+			conflicts: 'file.js',
+			conflictIssueNumber: 333
+		})
+
+		const content = await readFile(filename, 'utf-8')
+
+		t.ok(content.includes('origin/main'), 'should use origin/main for terminal branch')
+		t.notOk(content.includes('branch-here-main'), 'should not use branch-here for terminal branch')
+	})
+
+	t.test('handles missing issue number in PR', async t => {
+		const core = mockCore({})
+		const { readFile } = require('fs/promises')
+
+		const action = new TestAutoMerger({
+			prNumber: 777,
+			prCommitSha: 'sha123',
+			config: {
+				getBranchAlias: () => 'release'
+			},
+			core
+		})
+		action.originalPrNumber = 777
+		action.terminalBranch = 'main'
+
+		const filename = await action.writeComment({
+			branch: 'release',
+			issueNumber: null,  // No issue linked to PR
+			conflicts: 'test.js',
+			conflictIssueNumber: 888
+		})
+
+		const content = await readFile(filename, 'utf-8')
+
+		t.ok(content.includes('pull request #777'), 'should still reference PR')
+		t.notOk(content.includes('for issue #'), 'should not mention issue when none exists')
+		t.ok(content.includes('issue-null-pr-777-conflicts-release'), 'should handle null issue in branch name')
+	})
+})
+
 tap.test('merge', async t => {
 	t.test('handles already merged case', async t => {
 		const execCalls = []

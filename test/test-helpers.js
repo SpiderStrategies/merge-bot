@@ -125,7 +125,10 @@ class TestAutoMerger extends AutoMerger {
 		// Override URLs for consistent test output
 		this.repoUrl = 'https://github.com/sample/repo'
 		this.actionUrl = `${serverUrl}/sample/repo/actions/runs/${runId}`
-		this.conflictBranch = options.conflictBranch ?? 'conflict-branch'
+		// Only set conflictBranch if explicitly provided
+		if (options.conflictBranch !== undefined) {
+			this.conflictBranch = options.conflictBranch
+		}
 		this.issueUrl = options.issueUrl ?? 'https://github.com/sample/repo/1#issuecomment-123xyz'
 	}
 }
