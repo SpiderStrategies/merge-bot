@@ -36403,7 +36403,6 @@ class AutoMerger {
 		// State that will be populated during execution
 		this.terminalBranch = null
 		this.issueNumber = null
-		this.originalPrNumber = null
 		this.conflictBranch = null
 		this.issueUrl = null
 		this.statusMessage = null
@@ -36454,17 +36453,10 @@ class AutoMerger {
 		}
 
 		const trimmedMessage = await this.shell.exec(`git show -s --format=%B ${merge_commit_sha}`)
-		this.setOriginalPrNumber(this.prBranch, this.prNumber)
 		this.core.info(`PR title: ${this.prTitle}`)
-		this.core.info(`Original PR Number: ${this.originalPrNumber}`)
 		this.core.info(`trimmedMessage: ${trimmedMessage}`)
 	}
 
-	setOriginalPrNumber(prBranch, prNumber) {
-		// Tap tests fail if the regex is a constant
-		const prRegexResults = /issue-\w*-pr-(\d*)-conflicts[\w|-]*/g.exec(prBranch)
-		this.originalPrNumber = prRegexResults && prRegexResults.length > 1 ? prRegexResults[1] : prNumber
-	}
 
 	async executeMerges(mergeTargets) {
 		const targetMergeCount = mergeTargets.length
@@ -36556,6 +36548,9 @@ class AutoMerger {
 		if (conflicts.length > 0) {
 			console.log('Conflicts found:\n', conflicts)
 			this.conflictBranch = branch
+
+			// Create issue first to get the issue number, then create the branch
+			// We'll use a placeholder in the branch name template, then recreate it with the actual issue number
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
 			await this.git.reset(branch, '--hard') // must wipe out any local changes from merge
 
@@ -36598,9 +36593,20 @@ class AutoMerger {
 		})
 
 		const { number: conflictIssueNumber, html_url } = newIssueResponse.data
+
+		// Create the merge-conflicts branch name that users will checkout
+		const conflictBranchName = this.createMergeConflictsBranchName(
+			conflictIssueNumber, this.baseBranch, branch)
+
 		// Have to write comment and update after issue is created because
 		// we need to reference the issue number in the comment
-		const bodyFile = await this.writeComment({ branch, issueNumber, conflicts, conflictIssueNumber })
+		const bodyFile = await this.writeComment({
+			branch,
+			issueNumber,
+			conflicts,
+			conflictIssueNumber,
+			conflictBranchName
+		})
 		await this.shell.exec(`gh issue edit ${conflictIssueNumber} --body-file ${bodyFile} --add-assignee "${this.prAuthor}"`)
 
 		this.issueUrl = html_url
@@ -36623,11 +36629,12 @@ class AutoMerger {
 	 * used for the `merge-conflicts-` branch so we can delete it when the issue
 	 * is closed.
 	 *
+	 * @param {String} conflictBranchName The name of the merge-conflicts branch
+	 * that was created automatically and points to the conflicting commit.
+	 *
 	 * @returns {Promise<string>}
 	 */
-	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber }) {
-		const branchAlias = this.config.getBranchAlias(branch)
-		const newBranch = this.conflictsBranchName(issueNumber, branchAlias, this.originalPrNumber)
+	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber, conflictBranchName }) {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
@@ -36636,9 +36643,9 @@ class AutoMerger {
 			'### Details',
 			'Run these commands to perform the merge, then open a new pull request against the `' + branch + '` branch.',
 			'1. `git fetch`',
-			`1. \`git checkout --no-track -b ${newBranch} ${this.getOriginBranchForConflict(branch)}\``,
-			`1. \`git merge ${this.prCommitSha} -m "Merge commit ${this.prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"\``,
-			`1. \`git push --set-upstream origin ${newBranch}\``,
+			`1. \`git checkout ${conflictBranchName}\``,
+			`1. \`git merge ${this.prCommitSha} -m "Merge commit ${this.prCommitSha} into ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git push\``,
 			`1. \`createPR -b ${branch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			'',
 			'#### There were conflicts in these files:',
@@ -36649,22 +36656,6 @@ class AutoMerger {
 		return ISSUE_COMMENT_FILENAME
 	}
 
-	/**
-	 * We don't use a branch-here branch for the terminalBranch.
-	 * This function figures out the origin branch to reference
-	 * in the merge instructions based on this rule.
-	 */
-	getOriginBranchForConflict(branchName) {
-		let branch = branchName
-		if (this.terminalBranch !== branchName) {
-			branch = MB_BRANCH_HERE_PREFIX + branch
-		}
-		return `origin/${branch}`
-	}
-
-	conflictsBranchName(issueNumber, branchAlias, originalPrNumber) {
-		return `issue-${issueNumber}-pr-${originalPrNumber}-conflicts-${branchAlias.replaceAll(' ', '-')}`
-	}
 }
 
 module.exports = AutoMerger
