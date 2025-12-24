@@ -1,47 +1,81 @@
 const { writeFile } = require('fs/promises')
 
-const { findIssueNumber, configReader, BaseAction } = require('gh-action-components')
+const { findIssueNumber } = require('gh-action-components')
 const IssueResolver = require('./issue-resolver')
 const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = require('./constants')
 
 /**
- * Invoked by the spider-merge-bot.yml GitHub Action Workflow
- * Runs with the node version shipped with `ubuntu-latest`
+ * Handles automatic merging of pull requests forward through the release chain.
  *
  * See the original issue for more details/links:
  * https://github.com/SpiderStrategies/Scoreboard/issues/42921
 */
-class AutoMergeAction extends BaseAction {
-
-
-	constructor(options = {}) {
-		super()
-		this.options = options
-		this.github = require('@actions/github')
-	}
+class AutoMerger {
 
 	/**
-	 * State that is required for the output of the action, even if it is
-	 * skipped or fails prematurely.  Not in the constructor so tests can inject
-	 * the github context post construction.
+	 * @param {Object} options
+	 * @param {Object} options.pullRequest - The pull request from GitHub event
+	 * @param {Object} options.repository - The repository from GitHub event
+	 * @param {Object} options.config - The parsed merge-bot config
+	 * @param {number} options.prNumber - Pull request number
+	 * @param {string} options.prAuthor - GitHub username of the PR author
+	 * @param {string} options.prTitle - Title of the pull request
+	 * @param {string} options.prBranch - The head branch of the PR
+	 * @param {string} options.baseBranch - The base branch the PR was merged into
+	 * @param {string} options.prCommitSha - The SHA of the PR head commit
+	 * @param {Object} options.core - The @actions/core module for logging and outputs
+	 * @param {Object} options.shell - Shell instance for executing commands
+	 * @param {Object} options.gh - GitHubClient instance for GitHub API
+	 * @param {Object} options.git - Git instance for git operations
 	 */
-	async postConstruct() {
-		const {serverUrl, runId, repo} = this.github.context
+	constructor({
+		pullRequest,
+		repository,
+		config,
+		prNumber,
+		prAuthor,
+		prTitle,
+		prBranch,
+		baseBranch,
+		prCommitSha,
+		core,
+		shell,
+		gh,
+		git
+	}) {
+		// Business data
+		this.pullRequest = pullRequest
+		this.repository = repository
+		this.config = config
+		this.prNumber = prNumber
+		this.prAuthor = prAuthor
+		this.prTitle = prTitle
+		this.prBranch = prBranch
+		this.baseBranch = baseBranch
+		this.prCommitSha = prCommitSha
+
+		// Infrastructure
+		this.core = core
+		this.shell = shell
+		this.gh = gh
+		this.git = git
+
+		// Initialize URLs for status reporting
+		const { serverUrl, runId, repo } = this.gh.github.context
 		this.repoUrl = `${serverUrl}/${repo.owner}/${repo.repo}`
 		this.actionUrl = `${this.repoUrl}/actions/runs/${runId}`
 
-		// If an unexpected failure occurs linking to the action is good enough (for the slack footer)
-		// Merge conflicts will generate a more descriptive warning below.
-		this.core.setOutput('status-message', `<${this.actionUrl}|Action Run>`)
-		this.core.setOutput('status', 'success')
+		// State that will be populated during execution
+		this.terminalBranch = null
+		this.issueNumber = null
+		this.originalPrNumber = null
+		this.conflictBranch = null
+		this.issueUrl = null
+		this.statusMessage = null
 	}
 
-	async runAction() {
-
-		await this.postConstruct()
-
-		const {pullRequest} = this.options
-		if (!pullRequest.merged) {
+	async run() {
+		if (!this.pullRequest.merged) {
 			// There is no 'merged' activity type that can be specified in the workflow trigger.
 			// So checking if the PR was merged here and aborting the action is the best we can do
 			this.core.info('PR was closed without being merged, aborting...')
@@ -51,47 +85,32 @@ class AutoMergeAction extends BaseAction {
 		await this.initializeState()
 
 		if (!this.terminalBranch) {
-			this.core.info(`PR was against terminal branch, no merges required.`)
+			this.core.info('PR was against terminal branch, no merges required.')
 			return
 		}
 
-		this.issueNumber = await findIssueNumber({action: this, pullRequest})
+		const commits = await this.gh.fetchCommits(this.prNumber)
+		this.issueNumber = findIssueNumber(commits, this.pullRequest)
 
 		await this.runMerges()
 	}
 
 	async runMerges() {
-		const username = `Spider Merge Bot`
-		const userEmail = `merge-bot@spiderstrategies.com`
+		const username = 'Spider Merge Bot'
+		const userEmail = 'merge-bot@spiderstrategies.com'
 		this.core.info(`Assigning git identity to ${username} <${userEmail}>`)
-		await this.exec(`git config user.email "${userEmail}"`)
-		await this.exec(`git config user.name "${username}"`)
+		await this.git.configureIdentity(username, userEmail)
 
 		// Attempt to merge each specified branch
 		await this.executeMerges(this.config.mergeTargets)
 	}
 
-	/**
-	 * If the action fails, this method should be invoked and NOT
-	 * this.core.setFailed() directly.
-	 */
-	async onError(err) {
-		await super.onError(err);
-		// This is required for the slack integration, don't change it
-		this.core.setOutput('status', 'failure')
-	}
 
 	/**
-	 * Reads the config and the event, storing contextual information on this
-	 * action instance.
+	 * Initializes state needed for merging.
 	 */
 	async initializeState() {
-		const { configFile, prNumber, prBranch, prTitle, pullRequest = {}, baseBranch } = this.options
-		const { merge_commit_sha } = pullRequest
-
-		if (configFile) { // let tests bypass this
-			this.config = configReader(configFile, { baseBranch })
-		}
+		const { merge_commit_sha } = this.pullRequest
 
 		if (this.config && this.config.mergeTargets) {
 			this.terminalBranch = this.config.mergeTargets[this.config.mergeTargets.length - 1]
@@ -99,9 +118,9 @@ class AutoMergeAction extends BaseAction {
 			this.core.info(`terminal branch: ${this.terminalBranch}`)
 		}
 
-		const trimmedMessage = await this.exec(`git show -s --format=%B ${merge_commit_sha}`)
-		this.setOriginalPrNumber(prBranch, prNumber)
-		this.core.info(`PR title: ${prTitle}`)
+		const trimmedMessage = await this.shell.exec(`git show -s --format=%B ${merge_commit_sha}`)
+		this.setOriginalPrNumber(this.prBranch, this.prNumber)
+		this.core.info(`PR title: ${this.prTitle}`)
 		this.core.info(`Original PR Number: ${this.originalPrNumber}`)
 		this.core.info(`trimmedMessage: ${trimmedMessage}`)
 	}
@@ -117,27 +136,28 @@ class AutoMergeAction extends BaseAction {
 		this.core.info(`Merge Targets: ${mergeTargets}`)
 
 		let mergeCount = 0
-		for (; mergeCount < targetMergeCount; mergeCount++){
+		for (; mergeCount < targetMergeCount; mergeCount++) {
 			const branch = mergeTargets[mergeCount]
-			this.startGroup(`Merging into ${branch}...`)
+			this.core.startGroup(`Merging into ${branch}...`)
 
-			await this.exec(`git checkout ${branch}`)
+			await this.git.checkout(branch)
 			try {
-				if(!await this.merge({branch})) {
-					break;
+				if (!await this.merge({ branch })) {
+					break
 				}
 			} catch (e) {
-				await this.onError(e)
-				break;
+				this.core.error(e.message)
+				this.core.setFailed(e.message)
+				break
 			} finally {
-				this.endGroup()
+				this.core.endGroup()
 			}
 		}
 		const allMergesPassed = mergeCount === targetMergeCount
 
 		if (allMergesPassed) {
-			this.core.info(`All merges are complete`)
-			await this.deleteBranch(this.options.prBranch)
+			this.core.info('All merges are complete')
+			await this.git.deleteBranch(this.prBranch)
 		} else if (this.conflictBranch) {
 			this.generateMergeConflictWarning()
 		}
@@ -147,16 +167,11 @@ class AutoMergeAction extends BaseAction {
 	// This will be displayed in the warning annotation on the workflow run
 	// AND included in the slack message
 	generateMergeConflictWarning() {
-		const { prNumber} = this.options
 		// Slack is "special" https://api.slack.com/reference/surfaces/formatting#linking-urls
-		this.statusMessage = `<${this.repoUrl}/issues/${prNumber}|PR #${prNumber}> ` +
+		this.statusMessage = `<${this.repoUrl}/issues/${this.prNumber}|PR #${this.prNumber}> ` +
 			`<${this.issueUrl}|Issue> ` +
 			`<${this.actionUrl}|Action Run>`
 		this.core.warning(this.statusMessage)
-		// This becomes the footer in slack notifications
-		this.core.setOutput('status-message', this.statusMessage)
-		// This is used to detect error vs warning for slack notifications
-		this.core.setOutput('status', 'warning')
 	}
 
 	/**
@@ -166,26 +181,27 @@ class AutoMergeAction extends BaseAction {
 	 *     other branches true if the merge was successful or skipped false if
 	 *     there were conflicts
 	 */
-	async merge({branch,
+	async merge({
+		branch,
 		// Use "no fastforward" flag to make sure there are always changes to commit;
 		// otherwise, this will break when a new release branch has been created, but
 		// is still identical to the previous release branch. Example:
 		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
-		options = `--no-commit --no-ff`
+		options = '--no-commit --no-ff'
 	}) {
-		const { pullRequest, baseBranch, prNumber, prBranch } = this.options
-		const sha = pullRequest.head.sha // This is the commit that was just merged into the PRs base
-		const commitMessage = `auto-merge of ${sha} into \`${branch}\` from \`${prBranch}\` ` +
-			`triggered by (#${prNumber}) on \`${baseBranch}\``
+		// This is the commit that was just merged into the PRs base
+		const sha = this.pullRequest.head.sha
+		const commitMessage = `auto-merge of ${sha} into \`${branch}\` from \`${this.prBranch}\` ` +
+			`triggered by (#${this.prNumber}) on \`${this.baseBranch}\``
 
 		this.core.info(commitMessage)
 
 		let mergeResult
 		try {
-			await this.exec(`git pull`) // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
-			mergeResult = await this.exec(`git merge ${sha} ${options}`)
+			await this.git.pull() // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
+			mergeResult = await this.git.merge(sha, options)
 			this.core.info(mergeResult)
-		} catch(e) {
+		} catch (e) {
 			await this.handleConflicts(branch)
 			return false
 		}
@@ -193,27 +209,32 @@ class AutoMergeAction extends BaseAction {
 		// Already merged into this branch (not expected, but lets handle it (and just skip over))
 		const alreadyMerged = mergeResult.includes(UP_TO_DATE)
 		if (!alreadyMerged) {
-			const commits = await this.fetchCommits(this.options.prNumber)
+			const commits = await this.gh.fetchCommits(this.prNumber)
 			const lastCommit = commits.data.map(c => c.commit).pop()
-			await this.commit(commitMessage, lastCommit.author)
+			await this.git.commit(commitMessage, lastCommit.author)
 		}
 		return true
 	}
 
 	async handleConflicts(branch) {
-		const conflicts = await this.exec(`git diff --name-only --diff-filter=U`)
+		const conflicts = await this.shell.exec('git diff --name-only --diff-filter=U')
 		if (conflicts.length > 0) {
-			console.log(`Conflicts found:\n`, conflicts)
+			console.log('Conflicts found:\n', conflicts)
 			this.conflictBranch = branch
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
-			await this.exec(`git reset --hard ${branch}`) // must wipe out any local changes from merge
+			await this.git.reset(branch, '--hard') // must wipe out any local changes from merge
 
 			// Create merge-conflicts branch with encoded source and target
 			// Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
-			const sourceBranch = this.options.baseBranch
-			const encodedBranchName = this.createMergeConflictsBranchName(newIssueNumber, sourceBranch, branch)
-			await this.createBranch(encodedBranchName, this.options.prCommitSha)
-			await new IssueResolver(this).resolveIssues()
+			const encodedBranchName = this.createMergeConflictsBranchName(
+				newIssueNumber, this.baseBranch, branch)
+			await this.git.createBranch(encodedBranchName, this.prCommitSha)
+			await new IssueResolver({
+				prNumber: this.prNumber,
+				core: this.core,
+				shell: this.shell,
+				gh: this.gh
+			}).resolveIssues()
 		}
 	}
 
@@ -229,26 +250,23 @@ class AutoMergeAction extends BaseAction {
 		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-${normalizedSource}-to-${normalizedTarget}`
 	}
 
-	async createIssue({branch, conflicts}) {
+	async createIssue({ branch, conflicts }) {
 		const issueNumber = this.issueNumber
 		const branchObj = this.config.branches[branch] || {}
-		const title = `Merge${issueNumber ? ' #' + issueNumber : ''} (${this.options.prCommitSha.substring(0,9)}) into ${branch}`
+		const title = `Merge${issueNumber ? ' #' + issueNumber : ''} (${this.prCommitSha.substring(0, 9)}) into ${branch}`
 
 		// https://docs.github.com/en/rest/issues/issues#create-an-issue
-		const newIssueResponse = await this.execRest(
-			(api, opts) => api.issues.create(opts),
-			{
-				title,
-				milestone: branchObj.milestoneNumber,
-				labels: [`highest priority`, 'merge conflict']
-			},
-			'to create issue'
-		)
+		const newIssueResponse = await this.gh.createIssue({
+			title,
+			milestone: branchObj.milestoneNumber,
+			labels: ['highest priority', 'merge conflict']
+		})
+
 		const { number: conflictIssueNumber, html_url } = newIssueResponse.data
 		// Have to write comment and update after issue is created because
 		// we need to reference the issue number in the comment
-		const bodyFile = await this.writeComment({branch, issueNumber, conflicts, conflictIssueNumber})
-		await this.exec(`gh issue edit ${conflictIssueNumber} --body-file ${bodyFile} --add-assignee "${this.options.prAuthor}"`)
+		const bodyFile = await this.writeComment({ branch, issueNumber, conflicts, conflictIssueNumber })
+		await this.shell.exec(`gh issue edit ${conflictIssueNumber} --body-file ${bodyFile} --add-assignee "${this.prAuthor}"`)
 
 		this.issueUrl = html_url
 		this.core.info(`Created issue: ${html_url}`)
@@ -272,25 +290,24 @@ class AutoMergeAction extends BaseAction {
 	 *
 	 * @returns {Promise<string>}
 	 */
-	async writeComment({branch, issueNumber, conflicts, conflictIssueNumber}) {
+	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber }) {
 		const branchAlias = this.config.getBranchAlias(branch)
 		const newBranch = this.conflictsBranchName(issueNumber, branchAlias, this.originalPrNumber)
-		const { prNumber, prAuthor, prCommitSha } = this.options
-		const issueText = issueNumber ? `for issue #${issueNumber}` : ``
+		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		let lines = [`## Automatic Merge Failed`,
-			`@${prAuthor} changes from pull request #${prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
+			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
 			`Please submit a new pull request against the \`${branch}\` branch that includes the changes. `,
 			`The sooner you have a chance to do this the fewer conflicts you'll run into, so you may want to tackle this soon.`,
-			`### Details`,
-			`Run these commands to perform the merge, then open a new pull request against the \`${branch}\` branch.`,
-			`1. \`git fetch\``,
+			'### Details',
+			'Run these commands to perform the merge, then open a new pull request against the `' + branch + '` branch.',
+			'1. `git fetch`',
 			`1. \`git checkout --no-track -b ${newBranch} ${this.getOriginBranchForConflict(branch)}\``,
-			`1. \`git merge ${prCommitSha} -m "Merge commit ${prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git merge ${this.prCommitSha} -m "Merge commit ${this.prCommitSha} into ${newBranch} Fixes #${conflictIssueNumber}"\``,
 			`1. \`git push --set-upstream origin ${newBranch}\``,
 			`1. \`createPR -b ${branch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
-			``,
-			`#### There were conflicts in these files:`,
-			conflicts.split(`\n`).map(c => `- ${c}`).join('\n') + `\n`
+			'',
+			'#### There were conflicts in these files:',
+			conflicts.split('\n').map(c => `- ${c}`).join('\n') + '\n'
 		]
 
 		const filename = '.issue-comment.txt'
@@ -316,4 +333,4 @@ class AutoMergeAction extends BaseAction {
 	}
 }
 
-module.exports = AutoMergeAction
+module.exports = AutoMerger

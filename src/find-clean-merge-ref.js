@@ -55,21 +55,29 @@ function buildConflictPatterns(normalizedBranch, targetBranch, allBranchesInChai
  * CRITICAL: This function should only be called when commits have reached main,
  * as it's used to determine which commits are safe to include in branch-here pointers.
  *
- * @param {BaseAction} action An action instance that can be used to exec commands
- * @param {String} branch A branch to inspect (source branch)
- * @param {String} targetBranch The branch that this source branch merges into (optional for backwards compatibility)
- * @param {Array<String>} allBranchesInChain All branches from this branch to main, in order
+ * @param {Object} options
+ * @param {String} options.branch A branch to inspect (source branch)
+ * @param {String} [options.targetBranch] The branch that this source branch merges into (optional for backwards compatibility)
+ * @param {Array<String>} [options.allBranchesInChain] All branches from this branch to main, in order
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {Object} options.shell Shell instance for executing commands
  * @returns {Promise<string>} The ref (branch name or commit) that represents
  * the commit in the history where we know there are no pending merge conflicts.
  * If null, that indicates the branch-here branch can not be advanced any further
  */
-async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChain = []) {
+async function findCleanMergeRef({
+	branch,
+	targetBranch,
+	allBranchesInChain = [],
+	core,
+	shell
+}) {
 	// topo-order so parent commits are grouped w/ their children
 	const gitLogCmd = `git log` +
 		` origin/${MB_BRANCH_HERE_PREFIX}${branch}...origin/${branch}` + // all commits since last branch-here update
 		` --pretty=format:"%H %d" --topo-order` // %d to see refs
 
-	const history = (await action.exec(gitLogCmd)).split('\n')
+	const history = (await shell.exec(gitLogCmd)).split('\n')
 
 	const normalizedBranch = branch.replace(/\./g, '-')
 	const conflictPatterns = buildConflictPatterns(normalizedBranch, targetBranch, allBranchesInChain)
@@ -88,7 +96,13 @@ async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChai
 		return conflictPatterns.some(pattern => isRelevantConflict(line, pattern))
 	})
 
-	return await determineCleanMergePoint(action, branch, reversedHistory, conflictIdx)
+	return await determineCleanMergePoint({
+		branch,
+		reversedHistory,
+		conflictIdx,
+		core,
+		shell
+	})
 }
 
 
@@ -101,13 +115,21 @@ async function findCleanMergeRef(action, branch, targetBranch, allBranchesInChai
  * 2. Conflicts too close to current branch-here: cannot advance (returns null)
  * 3. Conflicts found with safe distance: advance to most recent valid ancestor before conflicts
  *
- * @param {BaseAction} action An action instance that can be used to exec commands
- * @param {String} branch The branch being maintained
- * @param {Array<String>} reversedHistory Git log history with oldest commits first
- * @param {Number} conflictIdx Index of first conflict in reversedHistory, or -1 if none
+ * @param {Object} options
+ * @param {String} options.branch The branch being maintained
+ * @param {Array<String>} options.reversedHistory Git log history with oldest commits first
+ * @param {Number} options.conflictIdx Index of first conflict in reversedHistory, or -1 if none
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {Object} options.shell Shell instance for executing commands
  * @returns {Promise<string|null>} The ref to advance to, or null if cannot advance
  */
-async function determineCleanMergePoint(action, branch, reversedHistory, conflictIdx) {
+async function determineCleanMergePoint({
+	branch,
+	reversedHistory,
+	conflictIdx,
+	core,
+	shell
+}) {
 	if (conflictIdx === -1) {
 		return `origin/${branch}`
 	}
@@ -120,7 +142,7 @@ async function determineCleanMergePoint(action, branch, reversedHistory, conflic
 
 	// Commits that came before the first merge-conflicts-* branch
 	const commits = reversedHistory.splice(0, conflictIdx).map(commit => commit.split(' ')[0])
-	return await findValidAncestor(action, commits, branch)
+	return await findValidAncestor({ commits, branch, core, shell })
 }
 
 /**
@@ -158,24 +180,26 @@ function isRelevantConflict(line, relevantConflictPattern) {
  * Finds the most recent commit in the provided list that is a valid ancestor
  * of the branch-here branch (can be fast-forwarded).
  *
- * @param {BaseAction} action An action instance that can be used to exec commands
- * @param {String[]} commits Array of commit hashes to search through
- * @param {String} branch The branch being maintained
+ * @param {Object} options
+ * @param {String[]} options.commits Array of commit hashes to search through
+ * @param {String} options.branch The branch being maintained
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {Object} options.shell Shell instance for executing commands
  * @returns {Promise<string|undefined>} The commit hash of a valid ancestor,
  *          or undefined if none found
  */
-async function findValidAncestor(action, commits, branch) {
+async function findValidAncestor({ commits, branch, core, shell }) {
 	let validCommit
 	let searching = true
 
 	while (searching && commits.length) {
 		const candidateCommit = commits.pop()
 		try {
-			await action.exec(`git merge-base --is-ancestor origin/${MB_BRANCH_HERE_PREFIX}${branch} ${candidateCommit}`)
+			await shell.exec(`git merge-base --is-ancestor origin/${MB_BRANCH_HERE_PREFIX}${branch} ${candidateCommit}`)
 			validCommit = candidateCommit
 			searching = false
 		} catch (e) {
-			action.core.info(`${candidateCommit} was not a valid ancestor for origin/${MB_BRANCH_HERE_PREFIX}${branch}, continuing search...`)
+			core.info(`${candidateCommit} was not a valid ancestor for origin/${MB_BRANCH_HERE_PREFIX}${branch}, continuing search...`)
 		}
 	}
 
@@ -183,7 +207,4 @@ async function findValidAncestor(action, commits, branch) {
 }
 
 module.exports = findCleanMergeRef
-module.exports.buildConflictPatterns = buildConflictPatterns
-module.exports.determineCleanMergePoint = determineCleanMergePoint
 module.exports.isRelevantConflict = isRelevantConflict
-module.exports.findValidAncestor = findValidAncestor

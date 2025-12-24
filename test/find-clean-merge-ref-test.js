@@ -5,15 +5,13 @@ const { isRelevantConflict } = require('../src/find-clean-merge-ref')
 
 const branch = 'branch'
 
-class ActionStub {
+const coreStub = { info: () => {} }
 
-	constructor(logOutput) {
-		this.logOutput = logOutput
-	}
-
-	async exec(cmd) {
-		if (cmd.startsWith('git log')) {
-			return this.logOutput
+function mockShell(logOutput) {
+	return {
+		core: coreStub,
+		async exec(cmd) {
+			return cmd.startsWith('git log') ? logOutput : ''
 		}
 	}
 }
@@ -88,8 +86,7 @@ tap.test(`merge-conflict at n-2`, async t => {
 427a3532cf813d43ba97b85a1a7e186efed50e61  (origin/merge-conflicts-45133)
 c9ab394289bb141f3eb99413fa967d0fc54f7597  (origin/branch-here-branch)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, null)
 })
 
@@ -97,8 +94,7 @@ tap.test(`merge-conflict at n-1`, async t => {
 
 	const logOutput = `c9ab394289bb141f3eb99413fa967d0fc54f7597  (origin/branch-here-branch, origin/merge-conflicts-45133)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, null)
 })
 
@@ -117,8 +113,7 @@ b28ec6fc613a33909752167c2fa8473e167346e2
 c97cecf267256e56e141eb4932810e446e584d59
 c9ab394289bb141f3eb99413fa967d0fc54f7597  (origin/branch-here-release-2021-commercial-emergency)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, "ffdd39b5907e01a7705b28dc45e101b1a8670ed0")
 })
 
@@ -130,8 +125,7 @@ tap.test(`clean merge point has another branch(es)`, async t => {
 c9cde4bd47b828ec84b3a0374e24fbd8dbfdf626  (origin/branch-here-release-2021-commercial-emergency, foo, bar)
 c9ab394289bb141f3eb99413fa967d0fc54f7597  (origin/branch-here-branch)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, "c9cde4bd47b828ec84b3a0374e24fbd8dbfdf626")
 })
 
@@ -141,8 +135,7 @@ tap.test(`merge-conflict first of 3 commits`, async t => {
 10ef5994529ad9648b789c617b515cc5d8c4da0f
 c97cecf267256e56e141eb4932810e446e584d59`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, "10ef5994529ad9648b789c617b515cc5d8c4da0f")
 })
 
@@ -161,9 +154,7 @@ f66da07bc48828ed320f7dae79965004f4c9ce16
 f9dccb36edd252a68a9b09957155b1b1cce11e53
 df05e8531bbe7896917157a1590ee4794688bde1  (tag: 5.0.0.222)`
 
-	const action = new ActionStub(logOutput)
-
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	// Finds the oldest relevant conflict to be most conservative
 	t.equal(cleanMergePoint, "5da246f8231fb0f79ac66a9b345e6052759faa44")
 })
@@ -171,7 +162,6 @@ df05e8531bbe7896917157a1590ee4794688bde1  (tag: 5.0.0.222)`
 // This test describes situation in
 // https://github.com/SpiderStrategies/gh-action-branch-maintainer/issues/4
 tap.test(`merge-conflict prevents finding a commit in the past`, async t => {
-	t.plan(2)
 	const logOutput = `616a75e1c27cecb46f05acbe2cfa11c6bf5e5b14  (HEAD -> testing)
 550b8a8b563627006af63ccf35ade57e1ecb6332
 06e93ad498b0eef956edfa6b73b1a5d79cf7b95d
@@ -185,22 +175,21 @@ f66da07bc48828ed320f7dae79965004f4c9ce16
 f9dccb36edd252a68a9b09957155b1b1cce11e53
 df05e8531bbe7896917157a1590ee4794688bde1  (tag: 5.0.0.222)`
 
-	const action = new ActionStub(logOutput)
-	action.exec = async function (cmd) {
-		console.log(cmd)
-		if (cmd.startsWith('git log')) {
-			return this.logOutput
-		} else if (cmd.includes('5da246f8231fb0f79ac66a9b345e6052759faa44')) {
-			// Mock to pretend this commit isn't an ancestor
-			throw new Error('Not an ancestor')
+	const shell = {
+		core: coreStub,
+		async exec(cmd) {
+			console.log(cmd)
+			if (cmd.startsWith('git log')) {
+				return logOutput
+			} else if (cmd.includes('5da246f8231fb0f79ac66a9b345e6052759faa44')) {
+				// Mock to pretend this commit isn't an ancestor
+				throw new Error('Not an ancestor')
+			}
 		}
 	}
-	action.core = {
-		info: () => {
-			t.ok('info logged')
-		}
-	}
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell })
+
 	// Searches from oldest conflict (48356) to be most conservative
 	t.equal(cleanMergePoint, "f66da07bc48828ed320f7dae79965004f4c9ce16")
 })
@@ -210,22 +199,19 @@ tap.test(`no conflicts`, async t => {
 10ef5994529ad9648b789c617b515cc5d8c4da0f
 c97cecf267256e56e141eb4932810e446e584d59`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, "origin/branch")
 })
 
 tap.test(`no output`, async t => {
 	const logOutput = ``
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, "origin/branch")
 })
 
 tap.test(`empty line`, async t => {
 	const logOutput = `\n`
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, branch)
+	const cleanMergePoint = await findCleanMergeRef({ branch, core: coreStub, shell: mockShell(logOutput) })
 	t.equal(cleanMergePoint, "origin/branch")
 })
 
@@ -243,9 +229,14 @@ bec64b93e613f2525f0c1ef7acaf9d890e7f81f5
 9243d7e7877578b47a5437110271376b64847c05
 df05e8531bbe7896917157a1590ee4794688bde1  (origin/branch-here-release-5.8.0)`
 
-	const action = new ActionStub(logOutput)
+	const shell = {
+		core: coreStub,
+		async exec(cmd) {
+			return cmd.startsWith('git log') ? logOutput : ''
+		}
+	}
 	// When maintaining branch-here for release-5.8.0 which merges TO main
-	const cleanMergePoint = await findCleanMergeRef(action, 'release-5.8.0', 'main')
+	const cleanMergePoint = await findCleanMergeRef({ branch: 'release-5.8.0', targetBranch: 'main', core: coreStub, shell })
 
 	// Should stop at the conflict that's FROM release-5.8.0 TO main
 	// Should ignore the conflict from release-5.7.2 to release-5.8.0
@@ -262,8 +253,13 @@ bec64b93e613f2525f0c1ef7acaf9d890e7f81f5  (origin/merge-conflicts-68586-release-
 9f32de6531d32091b43bf7910b7a2ed069e5bff1
 df05e8531bbe7896917157a1590ee4794688bde1  (origin/branch-here-release-5.8.0)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, 'release-5.8.0', 'main')
+	const shell = {
+		core: coreStub,
+		async exec(cmd) {
+			return cmd.startsWith('git log') ? logOutput : ''
+		}
+	}
+	const cleanMergePoint = await findCleanMergeRef({ branch: 'release-5.8.0', targetBranch: 'main', core: coreStub, shell })
 
 	// Should stop at the conflict TO main, ignore the conflict to some-other-branch
 	t.equal(cleanMergePoint, "9f32de6531d32091b43bf7910b7a2ed069e5bff1")
@@ -279,8 +275,13 @@ bec64b93e613f2525f0c1ef7acaf9d890e7f81f5  (origin/merge-conflicts-68586-release-
 9f32de6531d32091b43bf7910b7a2ed069e5bff1
 df05e8531bbe7896917157a1590ee4794688bde1  (origin/branch-here-release-5.8.0)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, 'release-5.8.0', 'main')
+	const shell = {
+		core: coreStub,
+		async exec(cmd) {
+			return cmd.startsWith('git log') ? logOutput : ''
+		}
+	}
+	const cleanMergePoint = await findCleanMergeRef({ branch: 'release-5.8.0', targetBranch: 'main', core: coreStub, shell })
 
 	// Should stop at the OLDEST relevant conflict (most conservative)
 	// 68586 is older than 68602, so stop before 68586
@@ -295,8 +296,13 @@ tap.test(`backwards compatible with old branch names`, async t => {
 f8f591de2d7ff1ee154fbd486a2c5afab972e5ea
 df05e8531bbe7896917157a1590ee4794688bde1  (origin/branch-here-release-5.8.0)`
 
-	const action = new ActionStub(logOutput)
-	const cleanMergePoint = await findCleanMergeRef(action, 'release-5.8.0', 'main')
+	const shell = {
+		core: coreStub,
+		async exec(cmd) {
+			return cmd.startsWith('git log') ? logOutput : ''
+		}
+	}
+	const cleanMergePoint = await findCleanMergeRef({ branch: 'release-5.8.0', targetBranch: 'main', core: coreStub, shell })
 
 	// Should treat old format as relevant (conservative approach)
 	t.equal(cleanMergePoint, "f8f591de2d7ff1ee154fbd486a2c5afab972e5ea")
@@ -334,11 +340,22 @@ ccc1111111111111111111111111111111111111
 ccc2222222222222222222222222222222222222
 ddd1111111111111111111111111111111111111  (origin/branch-here-release-5.7.2)`
 
-	const action = new ActionStub(logOutput)
+	const shell = {
+		core: coreStub,
+		async exec(cmd) {
+			return cmd.startsWith('git log') ? logOutput : ''
+		}
+	}
 
 	// When maintaining branch-here for release-5.7.2, pass the full downstream chain
 	const downstreamChain = ['release-5.8.0', 'main']
-	const cleanMergePoint = await findCleanMergeRef(action, 'release-5.7.2', 'release-5.8.0', downstreamChain)
+	const cleanMergePoint = await findCleanMergeRef({
+		branch: 'release-5.7.2',
+		targetBranch: 'release-5.8.0',
+		allBranchesInChain: downstreamChain,
+		core: coreStub,
+		shell
+	})
 
 	// Should stop at ccc111 (before bbb111) because bbb111 has a conflict
 	// at release-5.8.0 -> main (even though 5.7.2 -> 5.8.0 was clean)

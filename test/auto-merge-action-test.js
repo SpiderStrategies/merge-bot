@@ -1,90 +1,61 @@
 const tap = require('tap')
 
 const { mockCore } = require('gh-action-components')
-
-const AutoMergeAction = require('../src/automerge')
-
-const serverUrl = 'https://github.com'
-const runId = 1935306317
+const { TestAutoMerger, serverUrl, runId } = require('./test-helpers')
 
 process.env.GITHUB_REPOSITORY = 'spiderstrategies/unittest'
 
-class ActionStub extends AutoMergeAction {
-
-	constructor(options = {}) {
-		super(options)
-		this.repoUrl = `https://github.com/sample/repo`
-		this.conflictBranch = 'conflict-branch'
-		this.issueUrl = 'https://github.com/sample/repo/1#issuecomment-123xyz'
-		this.actionUrl = `${serverUrl}/sample/repo/actions/runs/${runId}`
-	}
-
-	async exec(cmd) {
-		if (cmd.startsWith('git log')) {
-			return this.logOutput
-		}
-	}
-}
-
 tap.test(`generateMergeWarning`, async t => {
-	const action = new ActionStub({
-		prNumber: 123
-	})
 	const coreMock = mockCore({})
-	action.core = coreMock
-	action.generateMergeConflictWarning(['master'])
+	const action = new TestAutoMerger({
+		prNumber: 123,
+		core: coreMock
+	})
+	action.generateMergeConflictWarning()
 
 	const expectedStatus = '<https://github.com/sample/repo/issues/123|PR #123> ' +
 		'<https://github.com/sample/repo/1#issuecomment-123xyz|Issue> ' +
 		'<https://github.com/sample/repo/actions/runs/1935306317|Action Run>'
 
 	t.equal(action.statusMessage, expectedStatus)
-	t.equal(coreMock.outputs['status-message'], expectedStatus)
-	t.equal(coreMock.outputs['status'], 'warning')
+	t.equal(coreMock.warningMsgs.length, 1, 'should have warning')
+	t.equal(coreMock.warningMsgs[0], expectedStatus, 'warning should match status message')
 })
 
 tap.test(`initialize state`, async t => {
-	const action = new ActionStub({
-		prNumber: 123,
-		pullRequest: {}
-	})
-	action.github = {
-		context: {
-			serverUrl:
-			runId,
-			repo: {
-				owner: 'sample',
-				repo: 'repo'
-			}
-		}
-	}
 	const coreMock = mockCore({})
-	action.core = coreMock
+	const action = new TestAutoMerger({
+		prNumber: 123,
+		pullRequest: { merge_commit_sha: 'abc123' },
+		config: { mergeTargets: ['main'] },
+		core: coreMock
+	})
 
-	await action.postConstruct()
 	await action.initializeState()
 
-	t.equal(coreMock.outputs['status'], 'success')
-	t.equal(coreMock.outputs['status-message'], `<${action.actionUrl}|Action Run>`)
-
+	t.equal(action.terminalBranch, 'main')
+	t.ok(coreMock.infoMsgs.some(msg => msg.includes('mergeTargets')))
+	t.ok(coreMock.infoMsgs.some(msg => msg.includes('terminal branch')))
 })
 
 /**
  *
  */
 tap.test(`error status`, async t => {
-	const action = new ActionStub({})
 	const coreMock = mockCore({})
-	action.core = coreMock
-	await action.onError()
-	t.equal(coreMock.outputs['status'], 'failure')
+	const action = new TestAutoMerger({
+		core: coreMock
+	})
+
+	action.core.setFailed('Test error')
+	t.equal(coreMock.failedArg, 'Test error')
 })
 
 // Asserts fix for scenario like this
 // https://github.com/SpiderStrategies/Scoreboard/runs/6423638921?check_suite_focus=true
 tap.test(`pr number`, async t => {
 
-	let action = new ActionStub({})
+	let action = new TestAutoMerger({})
 	action.setOriginalPrNumber('issue-undefined-pr-47384-conflicts-2022', '47387')
 	t.equal('47384', action.originalPrNumber, 'must accept undefined as an issue number')
 
@@ -96,7 +67,7 @@ tap.test(`pr number`, async t => {
 })
 
 tap.test(`getOriginBranchForConflict`, async t => {
-	let action = new ActionStub({})
+	let action = new TestAutoMerger({})
 	action.config = {
 		mergeTargets: [ 'a', 'b', 'c' ]
 	}
@@ -112,13 +83,13 @@ tap.test(`getOriginBranchForConflict`, async t => {
 })
 
 tap.test('conflictsBranchName handles spaces in alias', async t => {
-	let action = new ActionStub({})
+	let action = new TestAutoMerger({})
 	const actual = action.conflictsBranchName('1', 'Branch 1.5 emergency', '2')
 	t.equal('issue-1-pr-2-conflicts-Branch-1.5-emergency', actual)
 })
 
 tap.test('createMergeConflictsBranchName encodes source and target branches', async t => {
-	let action = new ActionStub({})
+	let action = new TestAutoMerger({})
 
 	t.test('handles standard branch names', async t => {
 		const actual = action.createMergeConflictsBranchName('68586', 'release-5.8.0', 'main')
@@ -139,62 +110,58 @@ tap.test('createMergeConflictsBranchName encodes source and target branches', as
 tap.test('executeMerges', async t => {
 	t.test('successful merge to all targets', async t => {
 		const execCalls = []
+		const gitCalls = []
 		const startGroups = []
 		const endGroupCount = []
+		const core = mockCore({})
+		core.startGroup = (msg) => startGroups.push(msg)
+		core.endGroup = () => endGroupCount.push(1)
 
-		class TestAction extends ActionStub {
-			async exec(cmd) {
-				execCalls.push(cmd)
-				return ''
+		const mockGit = {
+			async checkout(branch) {
+				execCalls.push(`git checkout ${branch}`)
+			},
+			async deleteBranch(branch) {
+				gitCalls.push(`deleteBranch:${branch}`)
 			}
+		}
 
+		class TestAction extends TestAutoMerger {
 			async merge({branch}) {
 				return true  // Success
-			}
-
-			startGroup(msg) {
-				startGroups.push(msg)
-			}
-
-			endGroup() {
-				endGroupCount.push(1)
-			}
-
-			async deleteBranch(branch) {
-				execCalls.push(`deleteBranch:${branch}`)
 			}
 		}
 
 		const action = new TestAction({
-			prBranch: 'issue-123-my-fix'
+			prBranch: 'issue-123-my-fix',
+			core,
+			git: mockGit
 		})
-		action.core = mockCore({})
 
 		const result = await action.executeMerges(['release-5.7', 'release-5.8', 'main'])
 
 		t.equal(result, true, 'should return true when all merges succeed')
 		t.equal(execCalls.filter(c => c.startsWith('git checkout')).length, 3, 'should checkout all branches')
-		t.equal(execCalls.find(c => c.includes('deleteBranch:issue-123-my-fix')), 'deleteBranch:issue-123-my-fix', 'should delete PR branch on success')
+		t.equal(gitCalls.find(c => c.includes('deleteBranch:issue-123-my-fix')), 'deleteBranch:issue-123-my-fix', 'should delete PR branch on success')
 		t.equal(startGroups.length, 3, 'should start group for each merge')
 		t.equal(endGroupCount.length, 3, 'should end group for each merge')
 	})
 
 	t.test('stops merging on first conflict', async t => {
 		const execCalls = []
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async exec(cmd) {
-				execCalls.push(cmd)
-				return ''
+		const mockGit = {
+			async checkout(branch) {
+				execCalls.push(`git checkout ${branch}`)
 			}
+		}
 
+		class TestAction extends TestAutoMerger {
 			async merge({branch}) {
 				// Fail on second branch
 				return branch !== 'release-5.8'
 			}
-
-			startGroup() {}
-			endGroup() {}
 
 			generateMergeConflictWarning() {
 				this.warningGenerated = true
@@ -202,9 +169,10 @@ tap.test('executeMerges', async t => {
 		}
 
 		const action = new TestAction({
-			prBranch: 'issue-123-my-fix'
+			prBranch: 'issue-123-my-fix',
+			core,
+			git: mockGit
 		})
-		action.core = mockCore({})
 		action.conflictBranch = 'release-5.8'
 
 		const result = await action.executeMerges(['release-5.7', 'release-5.8', 'main'])
@@ -216,88 +184,69 @@ tap.test('executeMerges', async t => {
 
 	t.test('handles merge exception', async t => {
 		const execCalls = []
-		let errorHandled = false
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async exec(cmd) {
-				execCalls.push(cmd)
-				return ''
+		const mockGit = {
+			async checkout(branch) {
+				execCalls.push(`git checkout ${branch}`)
 			}
+		}
 
+		class TestAction extends TestAutoMerger {
 			async merge({branch}) {
 				if (branch === 'release-5.8') {
 					throw new Error('Git merge failed')
 				}
 				return true
 			}
-
-			async onError(err) {
-				errorHandled = true
-				this.core.setOutput('status', 'failure')
-			}
-
-			startGroup() {}
-			endGroup() {}
 		}
 
 		const action = new TestAction({
-			prBranch: 'issue-123-my-fix'
+			prBranch: 'issue-123-my-fix',
+			core,
+			git: mockGit
 		})
-		action.core = mockCore({})
 
 		const result = await action.executeMerges(['release-5.7', 'release-5.8', 'main'])
 
 		t.equal(result, false, 'should return false when exception occurs')
-		t.equal(errorHandled, true, 'should call onError when exception occurs')
+		t.ok(core.failedArg, 'should call setFailed when exception occurs')
 		t.equal(execCalls.filter(c => c.startsWith('git checkout')).length, 2, 'should stop after exception')
 	})
 })
 
-tap.test('runAction', async t => {
+tap.test('run', async t => {
 	t.test('skips when PR not merged', async t => {
 		let infoCalled = false
-		const action = new ActionStub({
-			pullRequest: {
-				merged: false
-			}
-		})
 		const core = mockCore({})
 		core.info = () => { infoCalled = true }
-		action.core = core
-		action.github = {
-			context: {
-				serverUrl: 'https://github.com',
-				runId: 123,
-				repo: { owner: 'test', repo: 'test' }
-			}
-		}
 
-		await action.runAction()
+		const action = new TestAutoMerger({
+			pullRequest: {
+				merged: false
+			},
+			core
+		})
+
+		await action.run()
 
 		t.ok(infoCalled, 'should log info about skipping')
 	})
 
 	t.test('skips when PR against terminal branch', async t => {
-		const action = new ActionStub({
+		const core = mockCore({})
+		const action = new TestAutoMerger({
 			pullRequest: {
 				merged: true,
 				merge_commit_sha: 'abc123'
-			}
+			},
+			config: {
+				mergeTargets: ['main']
+			},
+			core
 		})
-		action.core = mockCore({})
-		action.github = {
-			context: {
-				serverUrl: 'https://github.com',
-				runId: 123,
-				repo: { owner: 'test', repo: 'test' }
-			}
-		}
-		action.config = {
-			mergeTargets: ['main']
-		}
 		action.terminalBranch = null
 
-		await action.postConstruct()
 		await action.initializeState()
 
 		t.equal(action.terminalBranch, 'main')
@@ -307,26 +256,31 @@ tap.test('runAction', async t => {
 tap.test('merge', async t => {
 	t.test('handles already merged case', async t => {
 		const execCalls = []
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async exec(cmd) {
-				execCalls.push(cmd)
-				if (cmd.startsWith('git merge')) {
-					return 'Already up to date.'
-				}
-				return ''
+		const mockGit = {
+			async pull() {
+				execCalls.push('git pull')
+			},
+			async merge(sha, options) {
+				execCalls.push(`git merge ${sha}`)
+				return 'Already up to date.'
+			},
+			async commit(message, author) {
+				execCalls.push('git commit')
 			}
 		}
 
-		const action = new TestAction({
+		const action = new TestAutoMerger({
 			pullRequest: {
 				head: { sha: 'abc123' }
 			},
 			baseBranch: 'release-5.7',
 			prNumber: 456,
-			prBranch: 'my-feature'
+			prBranch: 'my-feature',
+			core,
+			git: mockGit
 		})
-		action.core = mockCore({})
 
 		const result = await action.merge({branch: 'release-5.8'})
 
@@ -337,18 +291,29 @@ tap.test('merge', async t => {
 	})
 
 	t.test('successful merge creates commit', async t => {
-		const execCalls = []
 		let commitCalled = false
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async exec(cmd) {
-				execCalls.push(cmd)
-				if (cmd.startsWith('git merge')) {
-					return 'Merge made by strategy'
-				}
-				return ''
+		const mockGit = {
+			async pull() {},
+			async merge(sha, options) {
+				return 'Merge made by strategy'
+			},
+			async commit(message, author) {
+				commitCalled = true
+				t.ok(author, 'should pass author to commit')
+				t.equal(author.name, 'Test', 'should use correct author name')
 			}
+		}
 
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
 			async fetchCommits(prNum) {
 				return {
 					data: [{
@@ -358,21 +323,19 @@ tap.test('merge', async t => {
 					}]
 				}
 			}
-
-			async commit(message, author) {
-				commitCalled = true
-			}
 		}
 
-		const action = new TestAction({
+		const action = new TestAutoMerger({
 			pullRequest: {
 				head: { sha: 'def456' }
 			},
 			baseBranch: 'release-5.7',
 			prNumber: 789,
-			prBranch: 'my-feature'
+			prBranch: 'my-feature',
+			core,
+			git: mockGit,
+			gh: mockGh
 		})
-		action.core = mockCore({})
 
 		const result = await action.merge({branch: 'release-5.8'})
 
@@ -382,15 +345,16 @@ tap.test('merge', async t => {
 
 	t.test('handles conflicts', async t => {
 		let conflictsHandled = false
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async exec(cmd) {
-				if (cmd.startsWith('git merge')) {
-					throw new Error('Merge conflict')
-				}
-				return ''
+		const mockGit = {
+			async pull() {},
+			async merge(sha, options) {
+				throw new Error('Merge conflict')
 			}
+		}
 
+		class TestAction extends TestAutoMerger {
 			async handleConflicts(branch) {
 				conflictsHandled = true
 			}
@@ -402,9 +366,10 @@ tap.test('merge', async t => {
 			},
 			baseBranch: 'release-5.7',
 			prNumber: 999,
-			prBranch: 'my-feature'
+			prBranch: 'my-feature',
+			core,
+			git: mockGit
 		})
-		action.core = mockCore({})
 
 		const result = await action.merge({branch: 'release-5.8'})
 

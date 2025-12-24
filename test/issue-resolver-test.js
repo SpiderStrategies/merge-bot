@@ -1,15 +1,17 @@
 const tap = require('tap')
 
-const AutoMergeAction = require('../src/automerge')
+const { mockCore } = require('gh-action-components')
 const IssueResolver = require('../src/issue-resolver')
-
-class ActionStub extends AutoMergeAction {
-
-}
+const { createMockShell, createMockGitHubClient } = require('./test-helpers')
 
 tap.test(`getFixedIssues`, async t => {
-	const action = new ActionStub()
-	const ir = new IssueResolver(action)
+	const core = mockCore({})
+	const ir = new IssueResolver({
+		prNumber: 123,
+		core,
+		shell: createMockShell(core),
+		gh: createMockGitHubClient({})
+	})
 	ir.commitMessages = [
 		// extra whitespace, multiple issues in same comment
 		'this commit fixes  #234 and also ReSolves \t #235',
@@ -25,8 +27,13 @@ tap.test(`getFixedIssues`, async t => {
 })
 
 tap.test(`single Issue`, async t => {
-	const action = new ActionStub()
-	const ir = new IssueResolver(action)
+	const core = mockCore({})
+	const ir = new IssueResolver({
+		prNumber: 123,
+		core,
+		shell: createMockShell(core),
+		gh: createMockGitHubClient({})
+	})
 	ir.commitMessages = ['This commit fixes  #270 for real']
 	const fixedIssues = ir.getFixedIssues()
 	for (let issue_number of fixedIssues) {
@@ -35,21 +42,13 @@ tap.test(`single Issue`, async t => {
 })
 
 tap.test('resolveIssues', async t => {
-	const { mockCore } = require('gh-action-components')
 
 	t.test('closes all issues found in commits', async t => {
 		const closedIssues = []
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async fetchCommits(prNum) {
-				return {
-					data: [
-						{ commit: { message: 'fixes #100' } },
-						{ commit: { message: 'resolves #200 and closes #300' } }
-					]
-				}
-			}
-
+		const mockShell = {
+			core,
 			async exec(cmd) {
 				if (cmd.startsWith('gh issue close')) {
 					const issueNum = cmd.split(' ')[3]
@@ -58,11 +57,23 @@ tap.test('resolveIssues', async t => {
 			}
 		}
 
-		const action = new TestAction()
-		action.core = mockCore({})
-		action.prNumber = 123
+		const mockGh = {
+			async fetchCommits(prNum) {
+				return {
+					data: [
+						{ commit: { message: 'fixes #100' } },
+						{ commit: { message: 'resolves #200 and closes #300' } }
+					]
+				}
+			}
+		}
 
-		const ir = new IssueResolver(action)
+		const ir = new IssueResolver({
+			prNumber: 123,
+			core,
+			shell: mockShell,
+			gh: mockGh
+		})
 		await ir.resolveIssues()
 
 		t.same(closedIssues, ['100', '200', '300'], 'should close all issues')
@@ -70,16 +81,10 @@ tap.test('resolveIssues', async t => {
 
 	t.test('does nothing when no issues found', async t => {
 		let execCalled = false
+		const core = mockCore({})
 
-		class TestAction extends ActionStub {
-			async fetchCommits() {
-				return {
-					data: [
-						{ commit: { message: 'no issues here' } }
-					]
-				}
-			}
-
+		const mockShell = {
+			core,
 			async exec(cmd) {
 				if (cmd.startsWith('gh issue close')) {
 					execCalled = true
@@ -87,11 +92,22 @@ tap.test('resolveIssues', async t => {
 			}
 		}
 
-		const action = new TestAction()
-		action.core = mockCore({})
-		action.prNumber = 456
+		const mockGh = {
+			async fetchCommits() {
+				return {
+					data: [
+						{ commit: { message: 'no issues here' } }
+					]
+				}
+			}
+		}
 
-		const ir = new IssueResolver(action)
+		const ir = new IssueResolver({
+			prNumber: 456,
+			core,
+			shell: mockShell,
+			gh: mockGh
+		})
 		await ir.resolveIssues()
 
 		t.notOk(execCalled, 'should not call gh issue close when no issues found')
