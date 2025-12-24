@@ -1,7 +1,23 @@
 const tap = require('tap')
+const { unlink } = require('fs/promises')
 
 const { mockCore } = require('gh-action-components')
 const { TestAutoMerger, serverUrl, runId } = require('./test-helpers')
+const { ISSUE_COMMENT_FILENAME } = require('../src/constants')
+
+/**
+ * Registers teardown to clean up the temporary issue comment file
+ * created by writeComment tests, ensuring cleanup even if assertions fail.
+ */
+function cleanupIssueCommentFile(t) {
+	t.teardown(async () => {
+		try {
+			await unlink(ISSUE_COMMENT_FILENAME)
+		} catch (e) {
+			// File may not exist, that's okay
+		}
+	})
+}
 
 process.env.GITHUB_REPOSITORY = 'spiderstrategies/unittest'
 
@@ -474,7 +490,7 @@ tap.test('createIssue', async t => {
 tap.test('writeComment', async t => {
 	t.test('generates complete conflict resolution instructions', async t => {
 		const core = mockCore({})
-		const { readFile, unlink } = require('fs/promises')
+		const { readFile } = require('fs/promises')
 
 		const action = new TestAutoMerger({
 			prNumber: 12345,
@@ -499,16 +515,9 @@ tap.test('writeComment', async t => {
 			conflictIssueNumber: 99999
 		})
 
-		// Ensure cleanup happens even if assertions fail
-		t.teardown(async () => {
-			try {
-				await unlink(filename)
-			} catch (e) {
-				// File may not exist, that's okay
-			}
-		})
+		cleanupIssueCommentFile(t)
 
-		t.equal(filename, '.issue-comment.txt', 'should return filename')
+		t.equal(filename, ISSUE_COMMENT_FILENAME, 'should return filename')
 
 		const content = await readFile(filename, 'utf-8')
 
@@ -528,7 +537,7 @@ tap.test('writeComment', async t => {
 
 	t.test('omits branch-here for terminal branch conflicts', async t => {
 		const core = mockCore({})
-		const { readFile, unlink } = require('fs/promises')
+		const { readFile } = require('fs/promises')
 
 		const action = new TestAutoMerger({
 			prCommitSha: 'abc123',
@@ -547,14 +556,7 @@ tap.test('writeComment', async t => {
 			conflictIssueNumber: 333
 		})
 
-		// Ensure cleanup happens even if assertions fail
-		t.teardown(async () => {
-			try {
-				await unlink(filename)
-			} catch (e) {
-				// File may not exist, that's okay
-			}
-		})
+		cleanupIssueCommentFile(t)
 
 		const content = await readFile(filename, 'utf-8')
 
@@ -564,7 +566,7 @@ tap.test('writeComment', async t => {
 
 	t.test('handles missing issue number in PR', async t => {
 		const core = mockCore({})
-		const { readFile, unlink } = require('fs/promises')
+		const { readFile } = require('fs/promises')
 
 		const action = new TestAutoMerger({
 			prNumber: 777,
@@ -584,14 +586,7 @@ tap.test('writeComment', async t => {
 			conflictIssueNumber: 888
 		})
 
-		// Ensure cleanup happens even if assertions fail
-		t.teardown(async () => {
-			try {
-				await unlink(filename)
-			} catch (e) {
-				// File may not exist, that's okay
-			}
-		})
+		cleanupIssueCommentFile(t)
 
 		const content = await readFile(filename, 'utf-8')
 

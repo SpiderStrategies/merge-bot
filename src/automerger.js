@@ -2,7 +2,7 @@ const { writeFile } = require('fs/promises')
 
 const { findIssueNumber } = require('gh-action-components')
 const IssueResolver = require('./issue-resolver')
-const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = require('./constants')
+const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
 
 /**
  * Handles automatic merging of pull requests forward through the release chain.
@@ -310,9 +310,8 @@ class AutoMerger {
 			conflicts.split('\n').map(c => `- ${c}`).join('\n') + '\n'
 		]
 
-		const filename = '.issue-comment.txt'
-		await writeFile(filename, lines.join('\n'))
-		return filename
+		await writeFile(ISSUE_COMMENT_FILENAME, lines.join('\n'))
+		return ISSUE_COMMENT_FILENAME
 	}
 
 	/**
