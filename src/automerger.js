@@ -309,7 +309,7 @@ class AutoMerger {
 			'Run these commands to perform the merge, then open a new pull request against the `' + branch + '` branch.',
 			'1. `git fetch`',
 			`1. \`git checkout ${conflictBranchName}\``,
-			`1. \`git merge ${this.prCommitSha} -m "Merge commit ${this.prCommitSha} into ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git merge ${branch} -m "Merge ${branch} into ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
 			`1. \`git push\``,
 			`1. \`createPR -b ${branch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			'',
