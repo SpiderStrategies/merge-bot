@@ -72,6 +72,7 @@ class AutoMerger {
 		this.issueUrl = null
 		this.statusMessage = null
 		this.lastSuccessfulMergeRef = null
+		this.lastSuccessfulBranch = null
 	}
 
 	async run() {
@@ -118,8 +119,9 @@ class AutoMerger {
 			this.core.info(`terminal branch: ${this.terminalBranch}`)
 		}
 
-		// Initialize merge chain tracking to the PR commit
+		// Initialize merge chain tracking to the PR commit and base branch
 		this.lastSuccessfulMergeRef = this.prCommitSha
+		this.lastSuccessfulBranch = this.baseBranch
 
 		const trimmedMessage = await this.shell.exec(`git show -s --format=%B ${merge_commit_sha}`)
 		this.core.info(`PR title: ${this.prTitle}`)
@@ -209,8 +211,9 @@ class AutoMerger {
 			const lastCommit = commits.data.map(c => c.commit).pop()
 			await this.git.commit(commitMessage, lastCommit.author)
 
-			// Update tracking to point to the new merge commit
+			// Update tracking to point to the new merge commit and branch
 			this.lastSuccessfulMergeRef = await this.shell.exec('git rev-parse HEAD')
+			this.lastSuccessfulBranch = branch
 
 			// Create/update merge-forward branch to track this PR's isolated merge chain
 			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
@@ -233,9 +236,16 @@ class AutoMerger {
 
 			// Create merge-conflicts branch with encoded source and target
 			// Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
+			// Use lastSuccessfulBranch (the immediate predecessor) not baseBranch (original PR base)
 			const encodedBranchName = this.createMergeConflictsBranchName(
-				newIssueNumber, this.baseBranch, branch)
-			await this.git.createBranch(encodedBranchName, this.prCommitSha)
+				newIssueNumber, this.lastSuccessfulBranch, branch)
+			await this.git.createBranch(encodedBranchName, this.lastSuccessfulMergeRef)
+
+			// Create merge-forward target branch pointing to branch-here
+			// This is where the conflict resolution PR will merge to
+			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
+			await this.git.createBranch(mergeForwardBranch, `branch-here-${branch}`)
+
 			await new IssueResolver({
 				prNumber: this.prNumber,
 				core: this.core,

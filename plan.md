@@ -5,8 +5,8 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 ## Progress
 
 - [x] **Bug #1**: Merge instructions use target branch instead of commit SHA (5d407c4)
-- [ ] **Bug #2**: merge-conflicts branch points to wrong commit
-- [ ] **Bug #3**: merge-conflicts branch name uses wrong source branch
+- [x] **Bug #2**: merge-conflicts branch points to wrong commit
+- [x] **Bug #3**: merge-conflicts branch name uses wrong source branch
 
 ## Phase 1: Add merge-forward Branch Constant
 
@@ -26,9 +26,9 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 4: Fix merge-conflicts Branch Creation
 
-- [ ] Change branch creation to use `lastSuccessfulMergeRef` instead of `prCommitSha`
-- [ ] Change source branch in naming from `baseBranch` to the immediate predecessor (derive from merge chain position)
-- [ ] Create corresponding `merge-forward-pr-{prNumber}-{targetBranch}` pointing to `branch-here-{targetBranch}` as the PR target
+- [x] Change branch creation to use `lastSuccessfulMergeRef` instead of `prCommitSha`
+- [x] Change source branch in naming from `baseBranch` to the immediate predecessor (derive from merge chain position)
+- [x] Create corresponding `merge-forward-pr-{prNumber}-{targetBranch}` pointing to `branch-here-{targetBranch}` as the PR target
 
 ## Phase 5: Update Issue Instructions
 

@@ -321,6 +321,7 @@ tap.test('handleConflicts', async t => {
 				branches: {
 					'release-5.8': { milestoneNumber: 23 }
 				},
+				mergeTargets: ['release-5.8', 'main'],
 				getBranchAlias: (branch) => branch
 			},
 			core,
@@ -330,14 +331,22 @@ tap.test('handleConflicts', async t => {
 			conflictBranch: null
 		})
 		action.issueNumber = 12345
+		action.lastSuccessfulMergeRef = 'mergeCommit456'
+		action.lastSuccessfulBranch = 'release-5.7'
 
 		await action.handleConflicts('release-5.8')
 
 		t.ok(issueCreated, 'should create GitHub issue')
 		t.equal(action.conflictBranch, 'release-5.8', 'should set conflictBranch')
 		t.ok(gitCommands.find(c => c.includes('reset release-5.8 --hard')), 'should reset branch')
-		t.ok(gitCommands.find(c => c.includes('createBranch merge-conflicts-68586-release-5-7-to-release-5-8 abc123456789')),
-			'should create merge-conflicts branch with encoded name')
+
+		const mergeConflictsBranch = gitCommands.find(c => c.includes('createBranch merge-conflicts-68586-release-5-7-to-release-5-8'))
+		t.ok(mergeConflictsBranch, 'should create merge-conflicts branch with predecessor branch name')
+		t.ok(mergeConflictsBranch.includes('mergeCommit456'), 'should use lastSuccessfulMergeRef not prCommitSha')
+
+		const mergeForwardBranch = gitCommands.find(c => c.includes('createBranch merge-forward-pr-999-release-5-8'))
+		t.ok(mergeForwardBranch, 'should create merge-forward target branch')
+		t.ok(mergeForwardBranch.includes('branch-here-release-5.8'), 'should point to branch-here target')
 		// Note: IssueResolver.resolveIssues() is tested separately in issue-resolver-test.js
 	})
 
