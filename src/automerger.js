@@ -2,7 +2,7 @@ const { writeFile } = require('fs/promises')
 
 const { findIssueNumber } = require('gh-action-components')
 const IssueResolver = require('./issue-resolver')
-const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
+const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
 
 /**
  * Handles automatic merging of pull requests forward through the release chain.
@@ -208,9 +208,14 @@ class AutoMerger {
 			const commits = await this.gh.fetchCommits(this.prNumber)
 			const lastCommit = commits.data.map(c => c.commit).pop()
 			await this.git.commit(commitMessage, lastCommit.author)
-			
+
 			// Update tracking to point to the new merge commit
 			this.lastSuccessfulMergeRef = await this.shell.exec('git rev-parse HEAD')
+
+			// Create/update merge-forward branch to track this PR's isolated merge chain
+			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
+			await this.git.createBranch(mergeForwardBranch, this.lastSuccessfulMergeRef)
+			await this.git.push(`--force origin ${mergeForwardBranch}`)
 		}
 		return true
 	}
@@ -250,6 +255,17 @@ class AutoMerger {
 		const normalizedSource = normalizeForBranchName(sourceBranch)
 		const normalizedTarget = normalizeForBranchName(targetBranch)
 		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-${normalizedSource}-to-${normalizedTarget}`
+	}
+
+	/**
+	 * Creates a merge-forward branch name for tracking this PR's isolated merge chain
+	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
+	 * Example: merge-forward-pr-123-release-5-8-0
+	 */
+	createMergeForwardBranchName(targetBranch) {
+		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
+		const normalizedTarget = normalizeForBranchName(targetBranch)
+		return `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${normalizedTarget}`
 	}
 
 	async createIssue({ branch, conflicts }) {

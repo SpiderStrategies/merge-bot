@@ -82,7 +82,8 @@ function createMockGit(shell) {
 		async pull() {},
 		async merge() { return '' },
 		async reset() {},
-		async configureIdentity() {}
+		async configureIdentity() {},
+		async push() {}
 	}
 }
 

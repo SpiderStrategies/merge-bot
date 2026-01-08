@@ -88,6 +88,26 @@ tap.test('createMergeConflictsBranchName encodes source and target branches', as
 	})
 })
 
+tap.test('createMergeForwardBranchName creates proper branch names', async t => {
+	t.test('handles standard branch names', async t => {
+		const action = new TestAutoMerger({ prNumber: 123 })
+		const actual = action.createMergeForwardBranchName('release-5.8.0')
+		t.equal('merge-forward-pr-123-release-5-8-0', actual)
+	})
+
+	t.test('handles branch names without dots', async t => {
+		const action = new TestAutoMerger({ prNumber: 456 })
+		const actual = action.createMergeForwardBranchName('main')
+		t.equal('merge-forward-pr-456-main', actual)
+	})
+
+	t.test('handles multiple dots in version numbers', async t => {
+		const action = new TestAutoMerger({ prNumber: 789 })
+		const actual = action.createMergeForwardBranchName('release-5.7.2')
+		t.equal('merge-forward-pr-789-release-5-7-2', actual)
+	})
+})
+
 tap.test('executeMerges', async t => {
 	t.test('successful merge to all targets', async t => {
 		const execCalls = []
@@ -637,12 +657,15 @@ tap.test('merge', async t => {
 		t.notOk(execCalls.find(c => c.includes('git commit')), 'should not commit when already merged')
 	})
 
-	t.test('successful merge creates commit', async t => {
+	t.test('successful merge creates commit and merge-forward branch', async t => {
 		let commitCalled = false
 		const core = mockCore({})
+		const shellCommands = []
+		const gitCommands = []
 
 		const mockShell = {
 			async exec(cmd) {
+				shellCommands.push(cmd)
 				if (cmd === 'git rev-parse HEAD') {
 					return 'newMergeCommit789'
 				}
@@ -659,6 +682,12 @@ tap.test('merge', async t => {
 				commitCalled = true
 				t.ok(author, 'should pass author to commit')
 				t.equal(author.name, 'Test', 'should use correct author name')
+			},
+			async createBranch(branchName, ref) {
+				gitCommands.push(`createBranch:${branchName}:${ref}`)
+			},
+			async push(options) {
+				gitCommands.push(`push:${options}`)
 			}
 		}
 
@@ -701,6 +730,14 @@ tap.test('merge', async t => {
 		t.equal(result, true, 'should return true on success')
 		t.ok(commitCalled, 'should create commit when merge successful')
 		t.equal(action.lastSuccessfulMergeRef, 'newMergeCommit789', 'should update lastSuccessfulMergeRef to new merge commit')
+
+		// Verify merge-forward branch creation
+		const createBranchCmd = gitCommands.find(c => c.startsWith('createBranch:merge-forward-pr-789-release-5-8'))
+		t.ok(createBranchCmd, 'should create merge-forward branch')
+		t.ok(createBranchCmd.includes(':newMergeCommit789'), 'merge-forward branch should point to merge commit')
+
+		const pushCmd = gitCommands.find(c => c.startsWith('push:'))
+		t.ok(pushCmd, 'should push merge-forward branch')
 	})
 
 	t.test('handles conflicts', async t => {

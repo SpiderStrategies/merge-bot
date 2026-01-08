@@ -20,9 +20,9 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 3: Create merge-forward Branches During Auto-merge
 
-- [ ] After each successful merge, create/update `merge-forward-pr-{prNumber}-{targetBranch}`
-- [ ] Point it to the merge commit (not the original PR commit)
-- [ ] This gives us isolated per-PR merge state
+- [x] After each successful merge, create/update `merge-forward-pr-{prNumber}-{targetBranch}`
+- [x] Point it to the merge commit (not the original PR commit)
+- [x] This gives us isolated per-PR merge state
 
 ## Phase 4: Fix merge-conflicts Branch Creation
 
