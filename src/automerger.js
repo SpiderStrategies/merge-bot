@@ -522,7 +522,8 @@ class AutoMerger {
 	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber, conflictBranchName }) {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		const mergeForwardBranch = `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${branch}`
-		const branchHereRef = `${MB_BRANCH_HERE_PREFIX}${branch}`
+		// Terminal branch (main) doesn't have a branch-here pointer, use branch name directly
+		const branchHereRef = branch === this.terminalBranch ? branch : `${MB_BRANCH_HERE_PREFIX}${branch}`
 
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,

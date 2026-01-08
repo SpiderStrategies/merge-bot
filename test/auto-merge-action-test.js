@@ -724,7 +724,8 @@ tap.test('writeComment', async t => {
 		const content = await readFile(filename, 'utf-8')
 
 		t.ok(content.includes('merge-conflicts-333-release-5-8-0-to-main'), 'should use merge-conflicts branch')
-		t.ok(content.includes('git merge branch-here-main'), 'should merge branch-here pointer')
+		t.ok(content.includes('git merge main'), 'should merge main directly (no branch-here for terminal branch)')
+		t.notOk(content.includes('git merge branch-here-main'), 'should NOT use branch-here-main (does not exist)')
 		t.ok(content.includes('merge-forward-pr-456-main'), 'should reference merge-forward branch for PR target')
 	})
 
