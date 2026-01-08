@@ -47,6 +47,13 @@ from anywhere in the release chain.
 - ✅ Branch from: `branch-here-release-5.8.0`
 - ❌ Never branch from: `release-5.8.0`
 
+**Important**: The terminal branch (`main`) does NOT have a `branch-here-main` pointer.
+
+**Why**: `branch-here` branches serve as stable snapshots of commits that have
+successfully completed the entire merge chain to main. Since `main` itself IS the
+final destination and already represents that stable state, a `branch-here-main`
+would be redundant. Developers can branch directly from `main`.
+
 ### merge-forward Branches
 
 **Purpose**: These branches track each PR's merge chain in isolation, ensuring
