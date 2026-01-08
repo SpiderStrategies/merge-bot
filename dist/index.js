@@ -36718,6 +36718,12 @@ class AutoMerger {
 		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
 		options = '--no-commit --no-ff'
 	}) {
+		// Create merge-forward for current position BEFORE attempting the merge.
+		// If conflict occurs, handleConflicts needs this branch to exist.
+		const currentMergeForward = this.createMergeForwardBranchName(this.lastSuccessfulBranch)
+		await this.git.createBranch(currentMergeForward, this.lastSuccessfulMergeRef)
+		await this.git.push(`--force origin ${currentMergeForward}`)
+
 		// This is the commit that was just merged into the PRs base
 		const sha = this.pullRequest.head.sha
 		const commitMessage = `auto-merge of ${sha} into \`${branch}\` from \`${this.prBranch}\` ` +
@@ -36764,11 +36770,6 @@ class AutoMerger {
 			// We'll use a placeholder in the branch name template, then recreate it with the actual issue number
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
 			await this.git.reset(branch, '--hard') // must wipe out any local changes from merge
-
-			// Create merge-forward branch for the previous step to preserve the PR's progress
-			const previousMergeForward = this.createMergeForwardBranchName(this.lastSuccessfulBranch)
-			await this.git.createBranch(previousMergeForward, this.lastSuccessfulMergeRef)
-			await this.git.push(`--force origin ${previousMergeForward}`)
 
 			// Create merge-conflicts based on branch-here (the target), not the PR's progress.
 			// Developer merges the previous merge-forward INTO merge-conflicts.
