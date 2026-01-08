@@ -36775,7 +36775,7 @@ class AutoMerger {
 			// Create merge-forward target branch pointing to branch-here
 			// This is where the conflict resolution PR will merge to
 			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
-			await this.git.createBranch(mergeForwardBranch, `branch-here-${branch}`)
+			await this.git.createBranch(mergeForwardBranch, this.getBranchHereRef(branch))
 
 			await new IssueResolver({
 				prNumber: this.prNumber,
@@ -36807,6 +36807,18 @@ class AutoMerger {
 		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
 		const normalizedTarget = normalizeForBranchName(targetBranch)
 		return `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${normalizedTarget}`
+	}
+
+	/**
+	 * Gets the appropriate ref for a branch, handling the terminal branch case.
+	 * Terminal branch (main) doesn't have a branch-here pointer, so use branch directly.
+	 * Other branches use their branch-here pointer.
+	 *
+	 * @param {string} branch - The target branch name
+	 * @returns {string} Either the branch name itself (for terminal) or branch-here-{branch}
+	 */
+	getBranchHereRef(branch) {
+		return branch === this.terminalBranch ? branch : `${MB_BRANCH_HERE_PREFIX}${branch}`
 	}
 
 	async createIssue({ branch, conflicts }) {
@@ -36867,7 +36879,7 @@ class AutoMerger {
 	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber, conflictBranchName }) {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		const mergeForwardBranch = `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${branch}`
-		const branchHereRef = `${MB_BRANCH_HERE_PREFIX}${branch}`
+		const branchHereRef = this.getBranchHereRef(branch)
 
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
