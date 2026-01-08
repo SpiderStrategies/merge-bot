@@ -708,15 +708,26 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('for issue #54321'), 'should reference issue number')
 		t.ok(content.includes('git fetch'), 'should include git fetch command')
 		t.ok(content.includes('merge-conflicts-99999-release-5-7-to-release-5-8'), 'should use merge-conflicts branch name')
-		t.ok(content.includes('git merge branch-here-release-5.8'), 'should merge branch-here pointer for isolated merge')
+		t.ok(content.includes('git merge origin/merge-conflicts-99999-release-5-7-to-release-5-8'),
+			'should merge merge-conflicts forward into target-based branch')
+		t.ok(content.includes('origin/merge-forward-pr-12345-release-5-8'),
+			'should branch from merge-forward (which is based on branch-here)')
 		t.notOk(content.includes('git merge xyz789abc123'), 'should not merge the commit SHA directly')
+		t.notOk(content.includes('git merge branch-here-release-5.8'),
+			'should NOT merge target backward (would pull thousands of commits)')
 		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
 		t.ok(content.includes('- src/app.js'), 'should list first conflict file')
 		t.ok(content.includes('- src/config.js'), 'should list second conflict file')
-		t.ok(content.includes('createPR -b merge-forward-pr-12345-release-5.8'), 'should target merge-forward branch for PR')
+		t.ok(content.includes('merge-forward-pr-12345-release-5-8'), 'should target merge-forward branch for PR')
 	})
 
-	t.test('references branch-here and merge-forward for conflict resolution', async t => {
+	t.test('merges forward (few commits) not backward (thousands of commits)', async t => {
+		// When resolving conflicts, we want to merge the PR's changes INTO a branch
+		// based on the target (main/branch-here), not merge the target INTO the PR's branch.
+		// This is because the PR's branch may be based on an older release (e.g., release-5.8.0)
+		// which has diverged significantly from main (thousands of commits).
+		// Merging forward (PR into target) = few commits
+		// Merging backward (target into PR) = thousands of commits
 		const core = mockCore({})
 		const { readFile } = require('fs/promises')
 
@@ -742,9 +753,17 @@ tap.test('writeComment', async t => {
 
 		const content = await readFile(filename, 'utf-8')
 
-		t.ok(content.includes('merge-conflicts-333-release-5-8-0-to-main'), 'should use merge-conflicts branch')
-		t.ok(content.includes('git merge main'), 'should merge main directly (no branch-here for terminal branch)')
-		t.notOk(content.includes('git merge branch-here-main'), 'should NOT use branch-here-main (does not exist)')
+		// Should start from merge-forward (which is based on main), not merge-conflicts
+		t.ok(content.includes('git checkout -b'), 'should create a new branch')
+		t.ok(content.includes('origin/merge-forward-pr-456-main'), 'should branch from merge-forward')
+
+		// Should merge merge-conflicts INTO the new branch (forward direction)
+		t.ok(content.includes('git merge origin/merge-conflicts-333-release-5-8-0-to-main'),
+			'should merge merge-conflicts branch forward (few commits)')
+		t.notOk(content.includes('git merge main'),
+			'should NOT merge main backward (would be thousands of commits)')
+
+		// PR target is still the merge-forward branch
 		t.ok(content.includes('merge-forward-pr-456-main'), 'should reference merge-forward branch for PR target')
 	})
 

@@ -533,8 +533,11 @@ class AutoMerger {
 	 */
 	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber, conflictBranchName }) {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
-		const mergeForwardBranch = `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${branch}`
-		const branchHereRef = this.getBranchHereRef(branch)
+		const mergeForwardBranch = this.createMergeForwardBranchName(branch)
+
+		// Create a resolution branch name for the developer to work on
+		// This will be based on merge-forward (which points to branch-here/main)
+		const resolutionBranch = `resolve-${conflictIssueNumber}`
 
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
@@ -543,9 +546,9 @@ class AutoMerger {
 			'### Details',
 			'Run these commands to perform the merge, then open a new pull request against the `' + mergeForwardBranch + '` branch.',
 			'1. `git fetch`',
-			`1. \`git checkout ${conflictBranchName}\``,
-			`1. \`git merge ${branchHereRef} -m "Merge ${branchHereRef} into ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
-			`1. \`git push\``,
+			`1. \`git checkout -b ${resolutionBranch} origin/${mergeForwardBranch}\``,
+			`1. \`git merge origin/${conflictBranchName} -m "Merge ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git push -u origin ${resolutionBranch}\``,
 			`1. \`createPR -b ${mergeForwardBranch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			'',
 			'#### There were conflicts in these files:',
