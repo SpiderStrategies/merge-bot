@@ -71,6 +71,7 @@ class AutoMerger {
 		this.conflictBranch = null
 		this.issueUrl = null
 		this.statusMessage = null
+		this.lastSuccessfulMergeRef = null
 	}
 
 	async run() {
@@ -116,6 +117,9 @@ class AutoMerger {
 			this.core.info(`mergeTargets: ${JSON.stringify(this.config.mergeTargets)}`)
 			this.core.info(`terminal branch: ${this.terminalBranch}`)
 		}
+
+		// Initialize merge chain tracking to the PR commit
+		this.lastSuccessfulMergeRef = this.prCommitSha
 
 		const trimmedMessage = await this.shell.exec(`git show -s --format=%B ${merge_commit_sha}`)
 		this.core.info(`PR title: ${this.prTitle}`)
@@ -204,6 +208,9 @@ class AutoMerger {
 			const commits = await this.gh.fetchCommits(this.prNumber)
 			const lastCommit = commits.data.map(c => c.commit).pop()
 			await this.git.commit(commitMessage, lastCommit.author)
+			
+			// Update tracking to point to the new merge commit
+			this.lastSuccessfulMergeRef = await this.shell.exec('git rev-parse HEAD')
 		}
 		return true
 	}
