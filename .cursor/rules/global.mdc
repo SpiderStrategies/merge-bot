@@ -4,6 +4,21 @@ The Spider Merge Bot automatically merges changes forward across release branche
 (e.g., release-5.8.0 → main). When conflicts occur, it creates issues for
 developers to resolve.
 
+## ⚠️ CRITICAL: Multi-Invocation Operation
+
+**A single PR's merge chain spans MULTIPLE GitHub Action runs.**
+
+Example: PR #123 conflicts at main
+- **Action Run #1**: Creates `merge-forward-pr-123-{release-5.7.1, release-5.8.0}`, conflicts at main
+- Developer resolves conflicts, creates PR
+- **Action Run #2** (days later): Resumes chain, completes to main, updates ALL releases
+
+**Implications**:
+- No in-memory state across invocations
+- Must query Git/GitHub for existing branches (can't assume branches are from current run)
+- Parse branch names for metadata (PR numbers, targets)
+- Handle both "start chain" and "resume chain" scenarios
+
 ## Key Concepts
 
 ### Branch Types
@@ -44,8 +59,13 @@ developers only see their own conflicts during resolution.
 1. When a PR merges to a release branch, the bot creates an isolated merge chain
 2. Each merge-forward branch merges with the corresponding `branch-here` snapshot
 3. If conflict occurs, developer resolves in a `merge-conflicts` branch and PRs to the merge-forward branch
-4. Only after the entire chain reaches main are release branches updated
-5. All merge-forward branches are deleted after successful completion
+4. **When the resolution PR merges, a NEW GitHub Action invocation continues the chain**
+5. Only after the entire chain reaches main are release branches updated
+6. All merge-forward branches are deleted after successful completion
+
+**Critical**: Steps 1-3 happen in one action invocation, steps 4-6 happen in a DIFFERENT
+action invocation (possibly days later). The code must find ALL merge-forward branches
+for a PR, not just the ones created in the current run.
 
 ### merge-conflicts Branches
 
