@@ -115,6 +115,22 @@ tap.test('createMergeForwardBranchName creates proper branch names', async t => 
 	})
 })
 
+tap.test('getBranchHereRef returns correct ref', async t => {
+	t.test('returns branch-here-{branch} for non-terminal branches', async t => {
+		const action = new TestAutoMerger({})
+		action.terminalBranch = 'main'
+		const actual = action.getBranchHereRef('release-5.8.0')
+		t.equal('branch-here-release-5.8.0', actual)
+	})
+
+	t.test('returns branch name directly for terminal branch', async t => {
+		const action = new TestAutoMerger({})
+		action.terminalBranch = 'main'
+		const actual = action.getBranchHereRef('main')
+		t.equal('main', actual)
+	})
+})
+
 tap.test('executeMerges', async t => {
 	t.test('successful merge to all targets', async t => {
 		const gitCalls = []
@@ -458,9 +474,9 @@ tap.test('handleConflicts', async t => {
 		})
 
 		const git = createMockGit(shell, { callTracker: gitCommands })
-		// Override createBranch to capture branch name
+		// Override createBranch to capture branch name and ref
 		git.createBranch = async (branchName, ref) => {
-			gitCommands.push(`createBranch:${branchName}`)
+			gitCommands.push(`createBranch:${branchName}:${ref}`)
 		}
 
 		const mockGh = {
@@ -473,10 +489,10 @@ tap.test('handleConflicts', async t => {
 			},
 			async createIssue(options) {
 				issueCreated = true
-				t.equal(options.title, 'Merge #12345 (abc123456) into release-5.8', 'should have correct title')
+				t.equal(options.title, 'Merge #12345 (abc123456) into main', 'should have correct title')
 				t.ok(options.labels.includes('merge conflict'), 'should include merge conflict label')
 				t.ok(options.labels.includes('highest priority'), 'should include highest priority label')
-				t.equal(options.milestone, 23, 'should use milestone from config')
+				t.equal(options.milestone, 42, 'should use milestone from config')
 				return { data: { number: 68586, html_url: 'https://github.com/sample/repo/issues/68586' } }
 			},
 			async fetchCommits() {
@@ -495,12 +511,12 @@ tap.test('handleConflicts', async t => {
 			prNumber: 999,
 			prAuthor: 'testdev',
 			prCommitSha: 'abc123456789',
-			baseBranch: 'release-5.7',
+			baseBranch: 'release-5.8.0',
 			config: {
 				branches: {
-					'release-5.8': { milestoneNumber: 23 }
+					'main': { milestoneNumber: 42 }
 				},
-				mergeTargets: ['release-5.8', 'main'],
+				mergeTargets: ['release-5.8.0', 'main'],
 				getBranchAlias: (branch) => branch
 			},
 			core,
@@ -511,15 +527,18 @@ tap.test('handleConflicts', async t => {
 		})
 		action.issueNumber = 12345
 		action.lastSuccessfulMergeRef = 'mergeCommit456'
-		action.lastSuccessfulBranch = 'release-5.7'
+		action.lastSuccessfulBranch = 'release-5.8.0'
+		action.terminalBranch = 'main'
 
-		await action.handleConflicts('release-5.8')
+		await action.handleConflicts('main')
 
 		t.ok(issueCreated, 'should create GitHub issue')
-		t.equal(action.conflictBranch, 'release-5.8', 'should set conflictBranch')
+		t.equal(action.conflictBranch, 'main', 'should set conflictBranch')
 		t.ok(gitCommands.find(c => c.includes('reset')), 'should reset branch')
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-7-to-release-5-8')),
-			'should create merge-conflicts branch using lastSuccessfulBranch (release-5-7) not baseBranch')
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-8-0-to-main')),
+			'should create merge-conflicts branch using lastSuccessfulBranch (release-5-8-0) not baseBranch')
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-main:main')),
+			'should create merge-forward branch pointing to main (not branch-here-main)')
 	})
 
 	t.test('skips when no conflicts found', async t => {
