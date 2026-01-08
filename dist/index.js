@@ -36765,12 +36765,17 @@ class AutoMerger {
 			const newIssueNumber = await this.createIssue({ branch, conflicts })
 			await this.git.reset(branch, '--hard') // must wipe out any local changes from merge
 
-			// Create merge-conflicts branch with encoded source and target
-			// Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
-			// Use lastSuccessfulBranch (the immediate predecessor) not baseBranch (original PR base)
+			// Create merge-forward branch for the previous step to preserve the PR's progress
+			const previousMergeForward = this.createMergeForwardBranchName(this.lastSuccessfulBranch)
+			await this.git.createBranch(previousMergeForward, this.lastSuccessfulMergeRef)
+			await this.git.push(`--force origin ${previousMergeForward}`)
+
+			// Create merge-conflicts based on branch-here (the target), not the PR's progress.
+			// Developer merges the previous merge-forward INTO merge-conflicts.
+			// This pulls just the PR's few commits forward, not thousands backward.
 			const encodedBranchName = this.createMergeConflictsBranchName(
 				newIssueNumber, this.lastSuccessfulBranch, branch)
-			await this.git.createBranch(encodedBranchName, this.lastSuccessfulMergeRef)
+			await this.git.createBranch(encodedBranchName, this.getBranchHereRef(branch))
 
 			// Create merge-forward target branch pointing to branch-here
 			// This is where the conflict resolution PR will merge to
@@ -36880,9 +36885,9 @@ class AutoMerger {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		const mergeForwardBranch = this.createMergeForwardBranchName(branch)
 
-		// Create a resolution branch name for the developer to work on
-		// This will be based on merge-forward (which points to branch-here/main)
-		const resolutionBranch = `resolve-${conflictIssueNumber}`
+		// Developer merges the previous merge-forward INTO merge-conflicts.
+		// This pulls the PR's few commits forward, not thousands from the target.
+		const previousMergeForward = this.createMergeForwardBranchName(this.lastSuccessfulBranch)
 
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
@@ -36891,9 +36896,9 @@ class AutoMerger {
 			'### Details',
 			'Run these commands to perform the merge, then open a new pull request against the `' + mergeForwardBranch + '` branch.',
 			'1. `git fetch`',
-			`1. \`git checkout -b ${resolutionBranch} origin/${mergeForwardBranch}\``,
-			`1. \`git merge origin/${conflictBranchName} -m "Merge ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
-			`1. \`git push -u origin ${resolutionBranch}\``,
+			`1. \`git checkout ${conflictBranchName}\``,
+			`1. \`git merge origin/${previousMergeForward} -m "Merge ${previousMergeForward} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git push\``,
 			`1. \`createPR -b ${mergeForwardBranch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			'',
 			'#### There were conflicts in these files:',
