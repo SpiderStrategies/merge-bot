@@ -239,7 +239,8 @@ tap.test('run calls cleanup when commits reach main', async t => {
 	// Override maintainBranches to avoid complex test setup
 	maintainer.maintainBranches = async () => {}
 
-	await maintainer.run({ automergeConflictBranch: undefined })
+	// Automerger sets conflictBranch to null when there are no conflicts
+	await maintainer.run({ automergeConflictBranch: null })
 
 	t.ok(deletedBranches.length > 0, 'should cleanup merge-forward branches when commits reach main')
 	t.ok(deletedBranches.includes('merge-forward-pr-555-release-5-7'), 'should delete merge-forward branches')
