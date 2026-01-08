@@ -50,8 +50,8 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 8: Cleanup
 
-- [ ] Delete all `merge-forward-pr-{prNumber}-*` branches after chain reaches main
-- [ ] Delete `merge-conflicts-*` branches (existing logic, verify it still works)
+- [x] Delete all `merge-forward-pr-{prNumber}-*` branches after chain reaches main
+- [x] Delete `merge-conflicts-*` branches (existing logic, verify it still works)
 
 ## Phase 9: Tests
 

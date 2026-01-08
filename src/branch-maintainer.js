@@ -1,4 +1,4 @@
-const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = require('./constants')
+const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX } = require('./constants')
 const findCleanMergeRef = require('./find-clean-merge-ref')
 
 /**
@@ -57,6 +57,7 @@ class BranchMaintainer {
 		if (commitsReachedMain) {
 			this.core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
 			await this.maintainBranches()
+			await this.cleanupMergeForwardBranches()
 		} else if (isTerminalBranch) {
 			this.core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
 		} else {
@@ -86,6 +87,38 @@ class BranchMaintainer {
 			const issue = match[1]
 			await this.shell.execQuietly(
 				`git push origin --delete ${MB_BRANCH_FAILED_PREFIX}${issue}`)
+		}
+	}
+
+	/**
+	 * Cleans up all merge-forward branches for a given PR number.
+	 * This should be called after a PR's merge chain successfully reaches main.
+	 * Deletes all branches matching the pattern: merge-forward-pr-{prNumber}-*
+	 */
+	async cleanupMergeForwardBranches() {
+		const prNumber = this.pullRequest.number
+		const pattern = `${MB_BRANCH_FORWARD_PREFIX}${prNumber}-`
+
+		// Find all merge-forward branches for this PR
+		const branches = await this.shell.exec(
+			`git ls-remote --heads origin ${pattern}*`)
+
+		if (!branches) {
+			return
+		}
+
+		// Extract branch names from git ls-remote output
+		// Format: <hash>\trefs/heads/<branch-name>
+		const branchNames = branches
+			.split('\n')
+			.filter(line => line.trim())
+			.map(line => line.split('refs/heads/')[1])
+			.filter(name => name)
+
+		// Delete each branch
+		for (const branchName of branchNames) {
+			await this.shell.execQuietly(
+				`git push origin --delete ${branchName}`)
 		}
 	}
 
