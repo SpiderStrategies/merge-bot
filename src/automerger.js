@@ -479,8 +479,9 @@ class AutoMerger {
 		const { number: conflictIssueNumber, html_url } = newIssueResponse.data
 
 		// Create the merge-conflicts branch name that users will checkout
+		// Use lastSuccessfulBranch (immediate predecessor) not baseBranch (original PR base)
 		const conflictBranchName = this.createMergeConflictsBranchName(
-			conflictIssueNumber, this.baseBranch, branch)
+			conflictIssueNumber, this.lastSuccessfulBranch, branch)
 
 		// Have to write comment and update after issue is created because
 		// we need to reference the issue number in the comment

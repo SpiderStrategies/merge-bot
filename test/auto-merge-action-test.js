@@ -458,6 +458,10 @@ tap.test('handleConflicts', async t => {
 		})
 
 		const git = createMockGit(shell, { callTracker: gitCommands })
+		// Override createBranch to capture branch name
+		git.createBranch = async (branchName, ref) => {
+			gitCommands.push(`createBranch:${branchName}`)
+		}
 
 		const mockGh = {
 			github: {
@@ -514,7 +518,8 @@ tap.test('handleConflicts', async t => {
 		t.ok(issueCreated, 'should create GitHub issue')
 		t.equal(action.conflictBranch, 'release-5.8', 'should set conflictBranch')
 		t.ok(gitCommands.find(c => c.includes('reset')), 'should reset branch')
-		t.ok(gitCommands.find(c => c.includes('createBranch')), 'should create merge-conflicts branch')
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-7-to-release-5-8')),
+			'should create merge-conflicts branch using lastSuccessfulBranch (release-5-7) not baseBranch')
 	})
 
 	t.test('skips when no conflicts found', async t => {
@@ -587,6 +592,7 @@ tap.test('createIssue', async t => {
 			gh: mockGh
 		})
 		action.issueNumber = 888
+		action.lastSuccessfulBranch = 'release-5.8'
 
 		const newIssueNumber = await action.createIssue({
 			branch: 'main',
@@ -635,6 +641,7 @@ tap.test('createIssue', async t => {
 			shell,
 			gh: mockGh
 		})
+		action.lastSuccessfulBranch = 'release-5.8'
 
 		await action.createIssue({ branch: 'release-5.9', conflicts: 'file.js' })
 
