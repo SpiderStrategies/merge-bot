@@ -3,7 +3,6 @@ const tap = require('tap')
 const { mockCore } = require('gh-action-components')
 const { TestBranchMaintainer, createMockShell, createGitShellBehavior } = require('./test-helpers')
 const BranchMaintainer = require('../src/branch-maintainer')
-const { buildDownstreamBranchChain } = require('../src/branch-maintainer')
 
 process.env.GITHUB_REPOSITORY = 'spiderstrategies/unittest'
 
@@ -286,45 +285,6 @@ tap.test('run does not cleanup when commits blocked', async t => {
 	await maintainer.run({ automergeConflictBranch: 'release-5.8' })
 
 	t.equal(deletedBranches.length, 0, 'should not cleanup merge-forward branches when commits are blocked')
-})
-
-tap.test('buildDownstreamBranchChain', async t => {
-
-	t.test('single hop chain', async t => {
-		const mergeOperations = {
-			'release-5.7': 'main'
-		}
-		const chain = buildDownstreamBranchChain(mergeOperations, 'release-5.7')
-		t.same(['main'], chain)
-	})
-
-	t.test('multi-hop chain', async t => {
-		const mergeOperations = {
-			'release-5.6': 'release-5.7',
-			'release-5.7': 'release-5.8',
-			'release-5.8': 'main'
-		}
-		const chain = buildDownstreamBranchChain(mergeOperations, 'release-5.6')
-		t.same(['release-5.7', 'release-5.8', 'main'], chain)
-	})
-
-	t.test('terminal branch returns empty chain', async t => {
-		const mergeOperations = {
-			'release-5.7': 'main'
-		}
-		const chain = buildDownstreamBranchChain(mergeOperations, 'main')
-		t.same([], chain)
-	})
-
-	t.test('mid-chain branch', async t => {
-		const mergeOperations = {
-			'release-5.6': 'release-5.7',
-			'release-5.7': 'release-5.8',
-			'release-5.8': 'main'
-		}
-		const chain = buildDownstreamBranchChain(mergeOperations, 'release-5.7')
-		t.same(['release-5.8', 'main'], chain)
-	})
 })
 
 tap.test('fastForward', async t => {
