@@ -36950,7 +36950,7 @@ class BranchMaintainer {
 
 		// Determine if commits reached the terminal branch
 		const isTerminalBranch = this.pullRequest.base.ref === this.terminalBranch
-		const automergeSucceeded = automergeConflictBranch === undefined
+		const automergeSucceeded = !automergeConflictBranch
 		const commitsReachedMain = !isTerminalBranch && automergeSucceeded
 
 		if (commitsReachedMain) {
