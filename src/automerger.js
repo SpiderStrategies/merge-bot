@@ -334,17 +334,20 @@ class AutoMerger {
 	 */
 	async writeComment({ branch, issueNumber, conflicts, conflictIssueNumber, conflictBranchName }) {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
+		const mergeForwardBranch = `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${branch}`
+		const branchHereRef = `${MB_BRANCH_HERE_PREFIX}${branch}`
+
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
-			`Please submit a new pull request against the \`${branch}\` branch that includes the changes. `,
+			`Please submit a new pull request against the \`${mergeForwardBranch}\` branch that includes the changes. `,
 			`The sooner you have a chance to do this the fewer conflicts you'll run into, so you may want to tackle this soon.`,
 			'### Details',
-			'Run these commands to perform the merge, then open a new pull request against the `' + branch + '` branch.',
+			'Run these commands to perform the merge, then open a new pull request against the `' + mergeForwardBranch + '` branch.',
 			'1. `git fetch`',
 			`1. \`git checkout ${conflictBranchName}\``,
-			`1. \`git merge ${branch} -m "Merge ${branch} into ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git merge ${branchHereRef} -m "Merge ${branchHereRef} into ${conflictBranchName} Fixes #${conflictIssueNumber}"\``,
 			`1. \`git push\``,
-			`1. \`createPR -b ${branch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
+			`1. \`createPR -b ${mergeForwardBranch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			'',
 			'#### There were conflicts in these files:',
 			conflicts.split('\n').map(c => `- ${c}`).join('\n') + '\n'

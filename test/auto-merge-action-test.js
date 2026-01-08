@@ -522,22 +522,22 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('@bobsmith'), 'should mention PR author')
 		t.ok(content.includes('pull request #12345'), 'should reference original PR')
 		t.ok(content.includes('for issue #54321'), 'should reference issue number')
-		t.ok(content.includes('`release-5.8`'), 'should mention target branch')
 		t.ok(content.includes('git fetch'), 'should include git fetch command')
 		t.ok(content.includes('merge-conflicts-99999-release-5-7-to-release-5-8'), 'should use merge-conflicts branch name')
-		t.ok(content.includes('git merge release-5.8'), 'should merge the target branch, not the commit SHA')
+		t.ok(content.includes('git merge branch-here-release-5.8'), 'should merge branch-here pointer for isolated merge')
 		t.notOk(content.includes('git merge xyz789abc123'), 'should not merge the commit SHA directly')
 		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
 		t.ok(content.includes('- src/app.js'), 'should list first conflict file')
 		t.ok(content.includes('- src/config.js'), 'should list second conflict file')
-		t.notOk(content.includes('origin/branch-here-release-5.8'), 'should not use branch-here since working on existing merge-conflicts branch')
+		t.ok(content.includes('createPR -b merge-forward-pr-12345-release-5.8'), 'should target merge-forward branch for PR')
 	})
 
-	t.test('uses merge-conflicts branch directly', async t => {
+	t.test('references branch-here and merge-forward for conflict resolution', async t => {
 		const core = mockCore({})
 		const { readFile } = require('fs/promises')
 
 		const action = new TestAutoMerger({
+			prNumber: 456,
 			prCommitSha: 'abc123',
 			config: {
 				getBranchAlias: () => 'main'
@@ -559,7 +559,8 @@ tap.test('writeComment', async t => {
 		const content = await readFile(filename, 'utf-8')
 
 		t.ok(content.includes('merge-conflicts-333-release-5-8-0-to-main'), 'should use merge-conflicts branch')
-		t.notOk(content.includes('branch-here'), 'should not reference branch-here when using existing merge-conflicts branch')
+		t.ok(content.includes('git merge branch-here-main'), 'should merge branch-here pointer')
+		t.ok(content.includes('merge-forward-pr-456-main'), 'should reference merge-forward branch for PR target')
 	})
 
 	t.test('handles missing issue number in PR', async t => {

@@ -32,9 +32,9 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 5: Update Issue Instructions
 
-- [ ] Update `writeComment()` to reference the merge-forward target branch for PR creation
-- [ ] Instructions should tell user to merge `branch-here-{target}` (not the release branch directly)
-- [ ] PR should target `merge-forward-pr-{prNumber}-{targetBranch}`
+- [x] Update `writeComment()` to reference the merge-forward target branch for PR creation
+- [x] Instructions should tell user to merge `branch-here-{target}` (not the release branch directly)
+- [x] PR should target `merge-forward-pr-{prNumber}-{targetBranch}`
 
 ## Phase 6: Continue Chain After Conflict Resolution PR Merges
 
