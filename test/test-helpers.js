@@ -263,16 +263,53 @@ function useTestActions(testState) {
 	require.cache[require.resolve('../src/automerger')].exports = MergeBotTestAutoMerger
 	require.cache[require.resolve('../src/branch-maintainer')].exports = MergeBotTestMaintainer
 
-	// Stub configReader to return test config
+	// Stub configReader and infrastructure components to return test config
 	const ghActionComponents = require('gh-action-components')
 	const originalConfigReader = ghActionComponents.configReader
+	const originalShell = ghActionComponents.Shell
+	const originalGitHubClient = ghActionComponents.GitHubClient
+	const originalGit = ghActionComponents.Git
+
 	ghActionComponents.configReader = () => testState.config
+
+	// Mock infrastructure components
+	ghActionComponents.Shell = class MockShell {
+		constructor(core) {
+			this.core = core
+		}
+		async exec() { return '' }
+		async execQuietly() { return '' }
+	}
+
+	ghActionComponents.GitHubClient = class MockGitHubClient {
+		constructor() {
+			this.github = { context: github.context }
+		}
+		async fetchCommits() {
+			return { data: [{ commit: { author: { name: 'Test', email: 'test@example.com' }, message: 'Test' } }] }
+		}
+	}
+
+	ghActionComponents.Git = class MockGit {
+		constructor() {}
+		async configureIdentity() {}
+		async checkout() {}
+		async pull() {}
+		async merge() { return '' }
+		async commit() {}
+		async reset() {}
+		async createBranch() {}
+		async deleteBranch() {}
+	}
 
 	return () => {
 		// Restore original classes
 		require.cache[require.resolve('../src/automerger')].exports = originalAutoMerger
 		require.cache[require.resolve('../src/branch-maintainer')].exports = originalMaintainer
 		ghActionComponents.configReader = originalConfigReader
+		ghActionComponents.Shell = originalShell
+		ghActionComponents.GitHubClient = originalGitHubClient
+		ghActionComponents.Git = originalGit
 		delete require.cache[require.resolve('../src/merge-bot')]
 	}
 }
