@@ -540,9 +540,9 @@ tap.test('handleConflicts', async t => {
 		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-8-0-to-main:main')),
 			'should create merge-conflicts based on TARGET (main) for forward merging')
 
-		// merge-forward for the PREVIOUS step preserves the PR progress for merging forward
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5-8-0:mergeCommit456')),
-			'should create merge-forward for previous step with lastSuccessfulMergeRef')
+		// Previous merge-forward is NOT created here - it was created by merge() at start
+		t.notOk(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5-8-0')),
+			'should NOT create previous merge-forward (merge() creates it at start)')
 
 		// merge-forward for the target still points to main
 		t.ok(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-main:main')),
@@ -1059,6 +1059,8 @@ tap.test('merge', async t => {
 			git,
 			shell
 		})
+		action.lastSuccessfulBranch = 'release-5.7'
+		action.lastSuccessfulMergeRef = 'originalCommit'
 
 		const result = await action.merge({branch: 'release-5.8'})
 
@@ -1123,6 +1125,7 @@ tap.test('merge', async t => {
 		})
 
 		action.lastSuccessfulMergeRef = 'originalCommit123'
+		action.lastSuccessfulBranch = 'release-5.7'
 
 		const result = await action.merge({branch: 'release-5.8'})
 
@@ -1158,6 +1161,8 @@ tap.test('merge', async t => {
 			git,
 			shell
 		})
+		action.lastSuccessfulBranch = 'release-5.7'
+		action.lastSuccessfulMergeRef = 'originalCommit'
 
 		const result = await action.merge({branch: 'release-5.8'})
 
