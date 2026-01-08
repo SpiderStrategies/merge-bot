@@ -1,3 +1,7 @@
+---
+alwaysApply: true
+---
+
 # Spider Merge Bot
 
 The Spider Merge Bot automatically merges changes forward across release branches
