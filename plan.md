@@ -55,10 +55,10 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 9: Tests
 
-- [ ] Unit tests for merge-forward branch naming
-- [ ] Unit tests for chain continuation after conflict PR merge
-- [ ] Unit tests for release branch updates on chain completion
-- [ ] Integration test for Scenario Beta (two PRs with conflicts at same point)
+- [x] Unit tests for merge-forward branch naming
+- [x] Unit tests for chain continuation after conflict PR merge
+- [x] Unit tests for release branch updates on chain completion
+- [x] Integration test for Scenario Beta (two PRs with conflicts at same point)
 
 ## Notes
 

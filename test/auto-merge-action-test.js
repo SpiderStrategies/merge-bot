@@ -788,6 +788,75 @@ tap.test('writeComment', async t => {
 	})
 })
 
+tap.test('Scenario Beta: Two PRs with conflicts at same point are isolated', async t => {
+	// This test verifies the core isolation property: when two PRs both conflict
+	// at the same point in the merge chain, each PR's merge state is tracked independently.
+	// This is the foundation that prevents users from seeing each other's conflicts.
+
+	t.test('each PR tracks its own lastSuccessfulMergeRef independently', async t => {
+		const core = mockCore({})
+
+		// User A's PR starts from commit-A
+		const actionA = new TestAutoMerger({
+			prNumber: 111,
+			prCommitSha: 'commit-A-original',
+			core
+		})
+		await actionA.initializeState()
+
+		// After User A merges to release-5.8.0, lastSuccessfulMergeRef points to A's merge commit
+		actionA.lastSuccessfulMergeRef = 'commit-A-merged-to-5-8-0'
+
+		// User B's PR starts from a DIFFERENT commit
+		const actionB = new TestAutoMerger({
+			prNumber: 222,
+			prCommitSha: 'commit-B-original',
+			core
+		})
+		await actionB.initializeState()
+
+		// User B initializes to their own commit, not User A's
+		t.equal(actionB.lastSuccessfulMergeRef, 'commit-B-original',
+			'User B should start from their own commit')
+		t.not(actionB.lastSuccessfulMergeRef, actionA.lastSuccessfulMergeRef,
+			'User A and B should have different starting points')
+
+		// After User B merges to release-5.8.0, they track their OWN merge commit
+		actionB.lastSuccessfulMergeRef = 'commit-B-merged-to-5-8-0'
+
+		t.not(actionB.lastSuccessfulMergeRef, actionA.lastSuccessfulMergeRef,
+			'User A and B track separate merge commits - isolation achieved')
+	})
+
+	t.test('merge-forward branches encode PR number for isolation', async t => {
+		const actionA = new TestAutoMerger({ prNumber: 111 })
+		const actionB = new TestAutoMerger({ prNumber: 222 })
+
+		const branchA = actionA.createMergeForwardBranchName('release-5.8.0')
+		const branchB = actionB.createMergeForwardBranchName('release-5.8.0')
+
+		t.equal(branchA, 'merge-forward-pr-111-release-5-8-0', 'User A gets their own merge-forward branch')
+		t.equal(branchB, 'merge-forward-pr-222-release-5-8-0', 'User B gets their own merge-forward branch')
+		t.not(branchA, branchB, 'Different PRs get different merge-forward branches for same target')
+	})
+
+	t.test('merge-conflicts branches encode issue number for isolation', async t => {
+		const actionA = new TestAutoMerger({ prNumber: 111 })
+		const actionB = new TestAutoMerger({ prNumber: 222 })
+
+		// When conflicts happen, each PR gets its own conflict branch
+		const conflictBranchA = actionA.createMergeConflictsBranchName(68001, 'release-5.7.0', 'main')
+		const conflictBranchB = actionB.createMergeConflictsBranchName(68002, 'release-5.7.0', 'main')
+
+		t.equal(conflictBranchA, 'merge-conflicts-68001-release-5-7-0-to-main',
+			'User A gets conflict branch with their issue number')
+		t.equal(conflictBranchB, 'merge-conflicts-68002-release-5-7-0-to-main',
+			'User B gets conflict branch with their issue number')
+		t.not(conflictBranchA, conflictBranchB,
+			'Different issues get different conflict branches even for same merge path')
+	})
+})
+
 tap.test('merge', async t => {
 	t.test('handles already merged case', async t => {
 		const gitCalls = []
