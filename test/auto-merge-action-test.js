@@ -572,6 +572,127 @@ tap.test('handleConflicts', async t => {
 		t.equal(gitCommands.length, 0, 'should not call git reset when no conflicts')
 		t.notOk(action.conflictBranch, 'should not set conflictBranch when no conflicts')
 	})
+
+	t.test('PR merges through release branches but conflicts at main, creating issue and branches', async t => {
+		// Integration test for Phase 2 of test-plan.md:
+		// A PR merges cleanly through release branches but conflicts when reaching main.
+		// This tests the full merge-forward chain up to conflict issue creation.
+		//
+		// Scenario:
+		// 1. PR merged to release-5.7.2 (base branch)
+		// 2. Auto-merge to release-5.8.0 succeeds, creates merge-forward-pr-999-release-5-8-0
+		// 3. Auto-merge to main conflicts
+		// 4. Issue created with instructions
+		// 5. merge-conflicts and merge-forward-pr-999-main branches created
+		//
+		// This also reproduces a bug where handleConflicts tried to create the
+		// merge-forward branch for release-5.8.0 again after merge() already created it.
+		const core = mockCore({})
+		core.startGroup = () => {}
+		core.endGroup = () => {}
+
+		const createdBranches = new Set()
+		let issueCreated = false
+		let issueBody = ''
+
+		const shell = createMockShell(core, (cmd) => {
+			if (cmd.startsWith('git diff --name-only')) {
+				return 'merge-bot-test.txt'
+			}
+			if (cmd === 'git rev-parse HEAD') {
+				return 'newMergeCommit789'
+			}
+			return ''
+		})
+
+		const git = createMockGit(shell)
+		git.merge = async (sha, options) => {
+			// Return success for merge attempts (actual conflict detection happens in merge())
+			return 'Merge made by strategy'
+		}
+		git.createBranch = async (branchName, ref) => {
+			if (createdBranches.has(branchName)) {
+				throw new Error(`fatal: a branch named '${branchName}' already exists`)
+			}
+			createdBranches.add(branchName)
+		}
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async createIssue(options) {
+				issueCreated = true
+				t.ok(options.title.includes('into main'), 'issue title should indicate merge to main')
+				t.ok(options.labels.includes('merge conflict'), 'should have merge conflict label')
+				return { data: { number: 69517, html_url: 'https://github.com/sample/repo/issues/69517' } }
+			},
+			async fetchCommits() {
+				return { data: [{ commit: { author: { name: 'Test Dev', email: 'dev@example.com' } } }] }
+			}
+		}
+
+		class TestAction extends TestAutoMerger {
+			async merge({ branch }) {
+				// Simulate: release-5.8.0 succeeds, main conflicts
+				if (branch === 'release-5.8.0') {
+					// Successful merge - update tracking and create merge-forward branch
+					this.lastSuccessfulMergeRef = 'mergeCommit-5-8-0'
+					this.lastSuccessfulBranch = 'release-5.8.0'
+					const mergeForwardBranch = this.createMergeForwardBranchName(branch)
+					await this.git.createBranch(mergeForwardBranch, this.lastSuccessfulMergeRef)
+					return true
+				} else if (branch === 'main') {
+					// Conflict at main
+					await this.handleConflicts(branch)
+					return false
+				}
+				return true
+			}
+		}
+
+		const action = new TestAction({
+			prNumber: 999,
+			prAuthor: 'testdev',
+			prCommitSha: 'originalPrCommit',
+			prBranch: 'feature-branch',
+			baseBranch: 'release-5.7.2',
+			config: {
+				branches: { 'main': { milestoneNumber: 42 } },
+				mergeTargets: ['release-5.8.0', 'main'],
+				getBranchAlias: (branch) => branch
+			},
+			core,
+			shell,
+			git,
+			gh: mockGh
+		})
+		action.terminalBranch = 'main'
+		action.issueNumber = 12345
+
+		const result = await action.executeMerges(['release-5.8.0', 'main'])
+
+		// Verify the chain stopped at the conflict
+		t.equal(result, false, 'executeMerges should return false when conflict occurs')
+		t.equal(action.conflictBranch, 'main', 'should record conflict at main')
+
+		// Verify issue was created
+		t.ok(issueCreated, 'should create GitHub issue for conflict')
+
+		// Verify merge-forward branch was created for successful step
+		t.ok(createdBranches.has('merge-forward-pr-999-release-5-8-0'),
+			'should create merge-forward branch for successful release-5.8.0 merge')
+
+		// Verify branches for conflict resolution were created
+		t.ok(createdBranches.has('merge-conflicts-69517-release-5-8-0-to-main'),
+			'should create merge-conflicts branch based on main')
+		t.ok(createdBranches.has('merge-forward-pr-999-main'),
+			'should create merge-forward target branch for PR to merge into')
+	})
 })
 
 tap.test('createIssue', async t => {
