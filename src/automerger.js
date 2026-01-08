@@ -96,14 +96,90 @@ class AutoMerger {
 		await this.runMerges()
 	}
 
+	/**
+	 * Checks if this PR was merged into a merge-forward branch.
+	 * @returns {boolean} True if the base branch is a merge-forward branch
+	 */
+	isMergeForwardPR() {
+		return this.baseBranch.startsWith(MB_BRANCH_FORWARD_PREFIX)
+	}
+
+	/**
+	 * Extracts the original PR number from a merge-forward branch name.
+	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
+	 * @returns {string|null} The original PR number, or null if not a merge-forward branch
+	 */
+	getOriginalPRNumber() {
+		if (!this.isMergeForwardPR()) {
+			return null
+		}
+		const match = this.baseBranch.match(/^merge-forward-pr-(\d+)-/)
+		return match ? match[1] : null
+	}
+
+	/**
+	 * Extracts the target branch from a merge-forward branch name.
+	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
+	 * Example: merge-forward-pr-12345-release-5-8-0 -> release-5.8.0
+	 * @returns {string|null} The target branch with dots restored, or null if not a merge-forward branch
+	 */
+	getMergeForwardTargetBranch() {
+		if (!this.isMergeForwardPR()) {
+			return null
+		}
+		// Remove the prefix and PR number to get the normalized target branch
+		const normalizedTarget = this.baseBranch.replace(/^merge-forward-pr-\d+-/, '')
+
+		// Find the matching branch in mergeTargets by comparing normalized names
+		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
+		for (const target of this.config.mergeTargets) {
+			if (normalizeForBranchName(target) === normalizedTarget) {
+				return target
+			}
+		}
+
+		// Fallback: return normalized name (shouldn't happen in normal operation)
+		return normalizedTarget
+	}
+
+	/**
+	 * Calculates the remaining merge targets from a given starting point.
+	 * @param {string} startBranch The branch to start from (exclusive)
+	 * @returns {string[]} The remaining branches to merge into
+	 */
+	getRemainingMergeTargets(startBranch) {
+		const allTargets = this.config.mergeTargets
+		const startIndex = allTargets.indexOf(startBranch)
+
+		if (startIndex === -1) {
+			// Branch not found in targets, return all targets
+			return allTargets
+		}
+
+		// Return everything after startBranch
+		return allTargets.slice(startIndex + 1)
+	}
+
 	async runMerges() {
 		const username = 'Spider Merge Bot'
 		const userEmail = 'merge-bot@spiderstrategies.com'
 		this.core.info(`Assigning git identity to ${username} <${userEmail}>`)
 		await this.git.configureIdentity(username, userEmail)
 
+		// Determine which branches to merge into
+		let targets
+		if (this.isMergeForwardPR()) {
+			// Resume from where the conflict was resolved
+			const targetBranch = this.getMergeForwardTargetBranch()
+			targets = this.getRemainingMergeTargets(targetBranch)
+			this.core.info(`Resuming merge chain from ${targetBranch}, remaining targets: ${targets}`)
+		} else {
+			// Start normal merge chain
+			targets = this.config.mergeTargets
+		}
+
 		// Attempt to merge each specified branch
-		await this.executeMerges(this.config.mergeTargets)
+		await this.executeMerges(targets)
 	}
 
 

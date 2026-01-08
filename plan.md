@@ -38,9 +38,9 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 6: Continue Chain After Conflict Resolution PR Merges
 
-- [ ] Detect when a PR merges into a `merge-forward-pr-*` branch
-- [ ] Resume auto-merge chain from that point toward main
-- [ ] Track which original PR this belongs to (extract from branch name)
+- [x] Detect when a PR merges into a `merge-forward-pr-*` branch
+- [x] Resume auto-merge chain from that point toward main
+- [x] Track which original PR this belongs to (extract from branch name)
 
 ## Phase 7: Update Release Branches on Chain Completion
 

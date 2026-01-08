@@ -256,6 +256,87 @@ tap.test('run', async t => {
 
 		t.equal(action.terminalBranch, 'main')
 	})
+
+	t.test('detects merge-forward PR and extracts original PR number', async t => {
+		const core = mockCore({})
+		const action = new TestAutoMerger({
+			pullRequest: {
+				merged: true,
+				base: { ref: 'merge-forward-pr-12345-release-5-8-0' }
+			},
+			baseBranch: 'merge-forward-pr-12345-release-5-8-0',
+			config: {
+				mergeTargets: ['release-5.7.0', 'release-5.8.0', 'main']
+			},
+			core
+		})
+
+		const isMergeForward = action.isMergeForwardPR()
+		const originalPR = action.getOriginalPRNumber()
+		const targetBranch = action.getMergeForwardTargetBranch()
+
+		t.equal(isMergeForward, true, 'should detect merge-forward PR')
+		t.equal(originalPR, '12345', 'should extract original PR number')
+		t.equal(targetBranch, 'release-5.8.0', 'should extract target branch')
+	})
+
+	t.test('detects non-merge-forward PR', async t => {
+		const core = mockCore({})
+		const action = new TestAutoMerger({
+			pullRequest: {
+				merged: true,
+				base: { ref: 'release-5.7' }
+			},
+			baseBranch: 'release-5.7',
+			core
+		})
+
+		const isMergeForward = action.isMergeForwardPR()
+
+		t.equal(isMergeForward, false, 'should not detect regular PR as merge-forward')
+	})
+
+	t.test('continues merge chain from correct position when PR merges into merge-forward branch', async t => {
+		const core = mockCore({})
+		const executedMerges = []
+
+		class TestAction extends TestAutoMerger {
+			async executeMerges(targets) {
+				executedMerges.push(...targets)
+				return true
+			}
+		}
+
+		const action = new TestAction({
+			pullRequest: {
+				merged: true,
+				merge_commit_sha: 'abc123',
+				number: 67890,
+				title: 'Resolve conflicts for PR #12345',
+				base: { ref: 'merge-forward-pr-12345-release-5-8-0' },
+				head: { ref: 'merge-conflicts-67890-release-5-7-0-to-release-5-8-0', sha: 'resolvedCommit456' }
+			},
+			baseBranch: 'merge-forward-pr-12345-release-5-8-0',
+			prCommitSha: 'resolvedCommit456',
+			config: {
+				branches: {
+					'release-5.7.0': {},
+					'release-5.8.0': {},
+					'main': {}
+				},
+				mergeTargets: ['release-5.8.0', 'main'],
+				mergeOperations: {
+					'release-5.7.0': 'release-5.8.0',
+					'release-5.8.0': 'main'
+				}
+			},
+			core
+		})
+
+		await action.run()
+
+		t.same(executedMerges, ['main'], 'should only merge to main, not re-merge into release-5.8.0')
+	})
 })
 
 tap.test('handleConflicts', async t => {
