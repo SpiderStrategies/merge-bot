@@ -9,15 +9,24 @@ const runId = 1935306317
 
 /**
  * Creates a mock Shell for testing
+ *
+ * @param {Object} core - Core instance
+ * @param {Object|Function} execBehavior - Either a map of commands to functions, or a function to handle all commands
  */
 function createMockShell(core, execBehavior = {}) {
-	return {
-		core,
-		async exec(cmd) {
+	const execFn = typeof execBehavior === 'function'
+		? execBehavior
+		: (cmd) => {
 			if (execBehavior[cmd]) {
 				return execBehavior[cmd]()
 			}
 			return ''
+		}
+
+	return {
+		core,
+		async exec(cmd) {
+			return execFn(cmd)
 		},
 		async execQuietly(cmd) {
 			try {
@@ -26,6 +35,46 @@ function createMockShell(core, execBehavior = {}) {
 				// Swallow errors
 			}
 		}
+	}
+}
+
+/**
+ * Creates a shell exec behavior handler for git operations commonly used in tests.
+ * Simplifies setting up responses for git ls-remote, git rev-parse, etc.
+ *
+ * @param {Object} config - Configuration for git command responses
+ * @param {Object} config.mergeForwardBranches - Map of PR numbers to arrays of branch info
+ *   Example: { '12345': [{ branch: 'release-5-7-1', sha: 'abc123' }] }
+ * @param {Object} config.revParse - Map of refs to commit SHAs
+ *   Example: { 'origin/merge-forward-pr-12345-release-5-7-1': 'commit-sha-5-7-1' }
+ * @param {Function} config.fallback - Optional fallback handler for unmatched commands
+ */
+function createGitShellBehavior(config = {}) {
+	const { mergeForwardBranches = {}, revParse = {}, fallback = () => '' } = config
+
+	return (cmd) => {
+		// Handle git ls-remote for merge-forward branches
+		if (cmd.includes('git ls-remote') && cmd.includes('merge-forward-pr-')) {
+			const match = cmd.match(/merge-forward-pr-(\d+)-/)
+			if (match && mergeForwardBranches[match[1]]) {
+				return mergeForwardBranches[match[1]]
+					.map(({ branch, sha }) => `${sha}\trefs/heads/merge-forward-pr-${match[1]}-${branch}`)
+					.join('\n') + '\n'
+			}
+			return ''
+		}
+
+		// Handle git rev-parse
+		if (cmd.startsWith('git rev-parse')) {
+			for (const [ref, sha] of Object.entries(revParse)) {
+				if (cmd.includes(ref)) {
+					return sha
+				}
+			}
+			return ''
+		}
+
+		return fallback(cmd)
 	}
 }
 
@@ -71,18 +120,44 @@ function createMockGitHubClient(github) {
 
 /**
  * Creates a mock Git for testing
+ *
+ * @param {Object} shell - Shell instance
+ * @param {Object} options - Optional configuration
+ * @param {Array} options.callTracker - Array to track git commands (e.g., ['checkout:main', 'merge:abc123:--ff-only'])
  */
-function createMockGit(shell) {
+function createMockGit(shell, options = {}) {
+	const { callTracker } = options
+
 	return {
 		shell,
-		async commit() {},
-		async createBranch() {},
-		async deleteBranch() {},
-		async checkout() {},
-		async pull() {},
-		async merge() { return '' },
-		async reset() {},
-		async configureIdentity() {}
+		async commit() {
+			if (callTracker) callTracker.push('commit')
+		},
+		async createBranch() {
+			if (callTracker) callTracker.push('createBranch')
+		},
+		async deleteBranch(branch) {
+			if (callTracker) callTracker.push(`deleteBranch:${branch}`)
+		},
+		async checkout(branch) {
+			if (callTracker) callTracker.push(`checkout:${branch}`)
+		},
+		async pull() {
+			if (callTracker) callTracker.push('pull')
+		},
+		async merge(ref, options) {
+			if (callTracker) callTracker.push(`merge:${ref}:${options}`)
+			return ''
+		},
+		async reset() {
+			if (callTracker) callTracker.push('reset')
+		},
+		async configureIdentity() {
+			if (callTracker) callTracker.push('configureIdentity')
+		},
+		async push(args) {
+			if (callTracker) callTracker.push(`push:${args}`)
+		}
 	}
 }
 
@@ -262,16 +337,53 @@ function useTestActions(testState) {
 	require.cache[require.resolve('../src/automerger')].exports = MergeBotTestAutoMerger
 	require.cache[require.resolve('../src/branch-maintainer')].exports = MergeBotTestMaintainer
 
-	// Stub configReader to return test config
+	// Stub configReader and infrastructure components to return test config
 	const ghActionComponents = require('gh-action-components')
 	const originalConfigReader = ghActionComponents.configReader
+	const originalShell = ghActionComponents.Shell
+	const originalGitHubClient = ghActionComponents.GitHubClient
+	const originalGit = ghActionComponents.Git
+
 	ghActionComponents.configReader = () => testState.config
+
+	// Mock infrastructure components
+	ghActionComponents.Shell = class MockShell {
+		constructor(core) {
+			this.core = core
+		}
+		async exec() { return '' }
+		async execQuietly() { return '' }
+	}
+
+	ghActionComponents.GitHubClient = class MockGitHubClient {
+		constructor() {
+			this.github = { context: github.context }
+		}
+		async fetchCommits() {
+			return { data: [{ commit: { author: { name: 'Test', email: 'test@example.com' }, message: 'Test' } }] }
+		}
+	}
+
+	ghActionComponents.Git = class MockGit {
+		constructor() {}
+		async configureIdentity() {}
+		async checkout() {}
+		async pull() {}
+		async merge() { return '' }
+		async commit() {}
+		async reset() {}
+		async createBranch() {}
+		async deleteBranch() {}
+	}
 
 	return () => {
 		// Restore original classes
 		require.cache[require.resolve('../src/automerger')].exports = originalAutoMerger
 		require.cache[require.resolve('../src/branch-maintainer')].exports = originalMaintainer
 		ghActionComponents.configReader = originalConfigReader
+		ghActionComponents.Shell = originalShell
+		ghActionComponents.GitHubClient = originalGitHubClient
+		ghActionComponents.Git = originalGit
 		delete require.cache[require.resolve('../src/merge-bot')]
 	}
 }
@@ -284,6 +396,7 @@ module.exports = {
 	createMockShell,
 	createMockGitHubClient,
 	createMockGit,
+	createGitShellBehavior,
 	serverUrl,
 	runId
 }

@@ -1,5 +1,4 @@
-const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX } = require('./constants')
-const findCleanMergeRef = require('./find-clean-merge-ref')
+const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX } = require('./constants')
 
 /**
  * Maintains branch-here pointers by updating them to the latest commit that
@@ -57,6 +56,7 @@ class BranchMaintainer {
 		if (commitsReachedMain) {
 			this.core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
 			await this.maintainBranches()
+			await this.cleanupMergeForwardBranches()
 		} else if (isTerminalBranch) {
 			this.core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
 		} else {
@@ -90,6 +90,38 @@ class BranchMaintainer {
 	}
 
 	/**
+	 * Cleans up all merge-forward branches for a given PR number.
+	 * This should be called after a PR's merge chain successfully reaches main.
+	 * Deletes all branches matching the pattern: merge-forward-pr-{prNumber}-*
+	 */
+	async cleanupMergeForwardBranches() {
+		const prNumber = this.pullRequest.number
+		const pattern = `${MB_BRANCH_FORWARD_PREFIX}${prNumber}-`
+
+		// Find all merge-forward branches for this PR
+		const branches = await this.shell.exec(
+			`git ls-remote --heads origin ${pattern}*`)
+
+		if (!branches) {
+			return
+		}
+
+		// Extract branch names from git ls-remote output
+		// Format: <hash>\trefs/heads/<branch-name>
+		const branchNames = branches
+			.split('\n')
+			.filter(line => line.trim())
+			.map(line => line.split('refs/heads/')[1])
+			.filter(name => name)
+
+		// Delete each branch
+		for (const branchName of branchNames) {
+			await this.shell.execQuietly(
+				`git push origin --delete ${branchName}`)
+		}
+	}
+
+	/**
 	 * Maintains branch-here pointers for all branches in the config.
 	 */
 	async maintainBranches() {
@@ -102,14 +134,10 @@ class BranchMaintainer {
 				this.core.info(`At terminal branch (${branch}), no maintenance required`)
 				break
 			}
-			this.core.info(`\nMaintaining branch-here pointers for branch: ${branch}\n===============================================\n`)
+			this.core.info(`Maintaining branch-here pointer for: ${branch}`)
 			try {
-				await this.shell.exec( `git checkout ${branch}`)
-				const downstreamChain = buildDownstreamBranchChain(this.config.mergeOperations, branch)
-				this.core.info(`Checking for conflicts from ${branch} through chain: ${downstreamChain.join(' -> ')}`)
-
-				const targetBranch = this.config.mergeOperations?.[branch]
-				await this.updateBranchHerePointer(branch, targetBranch, downstreamChain)
+				await this.shell.exec(`git checkout ${branch}`)
+				await this.updateBranchHerePointer(branch)
 			} catch (e) {
 				this.core.error(e)
 				throw e
@@ -118,28 +146,17 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Updates the branch-here pointer for a given branch by finding a clean
-	 * merge point and fast-forwarding to it. If no clean merge point is found,
-	 * the branch-here pointer is left unchanged.
+	 * Updates the branch-here pointer for a given branch by fast-forwarding
+	 * it to the release branch tip.
+	 *
+	 * In the merge-forward architecture (issue #3), we always advance to the
+	 * branch tip. Conflicts are isolated in merge-forward chains, not release
+	 * branches, so branch-here stays much more up-to-date.
 	 *
 	 * @param {string} branch - The source branch being maintained
-	 * @param {string} targetBranch - The immediate target branch for this merge
-	 * @param {Array<string>} downstreamChain - The full chain of downstream branches
-	 *   to check for conflicts
 	 */
-	async updateBranchHerePointer(branch, targetBranch, downstreamChain) {
-		const cleanMergePoint = await findCleanMergeRef({
-			branch,
-			targetBranch,
-			allBranchesInChain: downstreamChain,
-			core: this.core,
-			shell: this.shell
-		})
-		if (cleanMergePoint) {
-			await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, cleanMergePoint)
-		} else {
-			this.core.info(`No clean merge point found for ${branch}, branch-here cannot be advanced`)
-		}
+	async updateBranchHerePointer(branch) {
+		await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, `origin/${branch}`)
 	}
 
 	/**
@@ -161,27 +178,5 @@ class BranchMaintainer {
 	}
 }
 
-/**
- * Builds the chain of downstream branches from a starting branch to the
- * terminal branch. This chain is used to check for conflicts at all points
- * in the merge path.
- *
- * @param {Object} mergeOperations - Map of branch -> targetBranch
- * @param {string} startBranch - The branch to start building the chain from
- * @returns {Array<string>} An ordered array of branch names representing
- *   the downstream merge path (e.g., ['release/23.12', 'release/24.01', 'main'])
- */
-function buildDownstreamBranchChain(mergeOperations, startBranch) {
-	const chain = []
-	let currentBranch = startBranch
-	while (mergeOperations[currentBranch]) {
-		const nextBranch = mergeOperations[currentBranch]
-		chain.push(nextBranch)
-		currentBranch = nextBranch
-	}
-	return chain
-}
-
 module.exports = BranchMaintainer
-module.exports.buildDownstreamBranchChain = buildDownstreamBranchChain
 
