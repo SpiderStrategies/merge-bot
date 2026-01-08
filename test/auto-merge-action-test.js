@@ -535,10 +535,18 @@ tap.test('handleConflicts', async t => {
 		t.ok(issueCreated, 'should create GitHub issue')
 		t.equal(action.conflictBranch, 'main', 'should set conflictBranch')
 		t.ok(gitCommands.find(c => c.includes('reset')), 'should reset branch')
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-8-0-to-main')),
-			'should create merge-conflicts branch using lastSuccessfulBranch (release-5-8-0) not baseBranch')
+
+		// merge-conflicts should be based on the TARGET (main) so forward merging works
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-8-0-to-main:main')),
+			'should create merge-conflicts based on TARGET (main) for forward merging')
+
+		// merge-forward for the PREVIOUS step preserves the PR progress for merging forward
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5-8-0:mergeCommit456')),
+			'should create merge-forward for previous step with lastSuccessfulMergeRef')
+
+		// merge-forward for the target still points to main
 		t.ok(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-main:main')),
-			'should create merge-forward branch pointing to main (not branch-here-main)')
+			'should create merge-forward for target pointing to main')
 	})
 
 	t.test('skips when no conflicts found', async t => {
@@ -687,6 +695,7 @@ tap.test('writeComment', async t => {
 		action.issueNumber = 54321
 		action.terminalBranch = 'main'
 		action.actionUrl = 'https://github.com/sample/repo/actions/runs/123456'
+		action.lastSuccessfulBranch = 'release-5.7'
 
 		const filename = await action.writeComment({
 			branch: 'release-5.8',
@@ -708,26 +717,24 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('for issue #54321'), 'should reference issue number')
 		t.ok(content.includes('git fetch'), 'should include git fetch command')
 		t.ok(content.includes('merge-conflicts-99999-release-5-7-to-release-5-8'), 'should use merge-conflicts branch name')
-		t.ok(content.includes('git merge origin/merge-conflicts-99999-release-5-7-to-release-5-8'),
-			'should merge merge-conflicts forward into target-based branch')
-		t.ok(content.includes('origin/merge-forward-pr-12345-release-5-8'),
-			'should branch from merge-forward (which is based on branch-here)')
+		t.ok(content.includes('git merge origin/merge-forward-pr-12345-release-5-7'),
+			'should merge the previous step forward into merge-conflicts')
 		t.notOk(content.includes('git merge xyz789abc123'), 'should not merge the commit SHA directly')
 		t.notOk(content.includes('git merge branch-here-release-5.8'),
-			'should NOT merge target backward (would pull thousands of commits)')
+			'should NOT merge target backward (thousands of commits)')
 		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
 		t.ok(content.includes('- src/app.js'), 'should list first conflict file')
 		t.ok(content.includes('- src/config.js'), 'should list second conflict file')
 		t.ok(content.includes('merge-forward-pr-12345-release-5-8'), 'should target merge-forward branch for PR')
 	})
 
-	t.test('merges forward (few commits) not backward (thousands of commits)', async t => {
-		// When resolving conflicts, we want to merge the PR's changes INTO a branch
-		// based on the target (main/branch-here), not merge the target INTO the PR's branch.
-		// This is because the PR's branch may be based on an older release (e.g., release-5.8.0)
-		// which has diverged significantly from main (thousands of commits).
-		// Merging forward (PR into target) = few commits
-		// Merging backward (target into PR) = thousands of commits
+	t.test('merges forward (few commits) instead of backward (thousands)', async t => {
+		// Problem: When merge-conflicts is based on release-5.8.0 and we merge main
+		// into it, we pull thousands of commits (all of main's divergence).
+		//
+		// Solution: merge-conflicts is now based on the TARGET (main), and we merge
+		// the PREVIOUS step's merge-forward branch INTO it. This pulls just the PR's
+		// few commits forward, not thousands backward.
 		const core = mockCore({})
 		const { readFile } = require('fs/promises')
 
@@ -740,6 +747,7 @@ tap.test('writeComment', async t => {
 			core
 		})
 		action.terminalBranch = 'main'
+		action.lastSuccessfulBranch = 'release-5.8.0'
 
 		const filename = await action.writeComment({
 			branch: 'main',
@@ -753,18 +761,19 @@ tap.test('writeComment', async t => {
 
 		const content = await readFile(filename, 'utf-8')
 
-		// Should start from merge-forward (which is based on main), not merge-conflicts
-		t.ok(content.includes('git checkout -b'), 'should create a new branch')
-		t.ok(content.includes('origin/merge-forward-pr-456-main'), 'should branch from merge-forward')
+		// Should checkout the existing merge-conflicts branch (not create a new one)
+		t.ok(content.includes('git checkout merge-conflicts-333-release-5-8-0-to-main'),
+			'should checkout the existing merge-conflicts branch')
 
-		// Should merge merge-conflicts INTO the new branch (forward direction)
-		t.ok(content.includes('git merge origin/merge-conflicts-333-release-5-8-0-to-main'),
-			'should merge merge-conflicts branch forward (few commits)')
+		// Should merge the PREVIOUS step's merge-forward (the PR's progress) INTO merge-conflicts
+		// This is forward merging (few commits) not backward merging (thousands)
+		t.ok(content.includes('git merge origin/merge-forward-pr-456-release-5-8-0'),
+			'should merge the previous merge-forward branch forward')
 		t.notOk(content.includes('git merge main'),
-			'should NOT merge main backward (would be thousands of commits)')
+			'should NOT merge target backward (thousands of commits)')
 
-		// PR target is still the merge-forward branch
-		t.ok(content.includes('merge-forward-pr-456-main'), 'should reference merge-forward branch for PR target')
+		// PR target is still the merge-forward branch for the conflict target
+		t.ok(content.includes('merge-forward-pr-456-main'), 'should target merge-forward branch for PR')
 	})
 
 	t.test('handles missing issue number in PR', async t => {
@@ -780,6 +789,7 @@ tap.test('writeComment', async t => {
 			core
 		})
 		action.terminalBranch = 'main'
+		action.lastSuccessfulBranch = 'release-5.7.0'
 
 		const filename = await action.writeComment({
 			branch: 'release',
@@ -812,6 +822,7 @@ tap.test('writeComment', async t => {
 			core
 		})
 		action.terminalBranch = 'main'
+		action.lastSuccessfulBranch = 'release-5.7.2'
 
 		const filename = await action.writeComment({
 			branch: 'release-5.8.0',
