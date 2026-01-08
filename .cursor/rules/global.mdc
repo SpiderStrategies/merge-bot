@@ -104,63 +104,7 @@ without separate branches.
 The branch proliferation isn't accidental complexity—it's the minimum structure
 required to achieve **isolation + history preservation + parallelism**.
 
-### Alternatives Considered and Rejected
-
-#### Alternative 1: Patch/Diff Reconstruction
-
-Instead of merge-forward branches, extract each PR's changes as a patch and
-apply it to `branch-here` when conflicts occur.
-
-**Why Rejected**: Destroys commit history. The original PR might have multiple
-commits with meaningful messages. A patch squashes them into one, losing:
-- Commit lineage and messages
-- Merge commit structure (patches create regular commits, not merges)
-- Traceability for `git blame` and `git log`
-- Bisectability
-
-#### Alternative 2: Cherry-Pick Isolation
-
-Cherry-pick commits instead of maintaining parallel merge chains.
-
-**Why Rejected**: Same problems as patches—loses merge commit structure and
-can fail unpredictably when cherry-picking across merge commits with prior
-conflict resolutions.
-
-#### Alternative 3: Queue-Based Merging
-
-Serialize all merges into a strict queue. Only one PR merges at a time.
-
-**Why Rejected**: Blocks parallelism. We want developers to be able to work
-independently without waiting for others' conflict resolutions.
-
-Additionally, implementing a queue with stateless GitHub Actions is tricky.
-You'd need external state (database, labels, or lock branches) with atomic
-operations to prevent race conditions. If a workflow crashes mid-execution,
-you get orphan locks that are hard to debug.
-
-#### Alternative 4: Accept Contamination
-
-Don't isolate. Let users see each other's conflicts.
-
-**Why Rejected**: This is the current system's behavior, which causes the
-problems documented in issue #3. Developers shouldn't have to resolve
-conflicts for changes they didn't make.
-
-#### Alternative 5: Lazy Merge-Forward (Only Isolate at Conflict Points)
-
-Auto-merge directly into release branches when there's no conflict. Only
-create isolation when conflict occurs.
-
-**Why Rejected**: Doesn't solve Scenario Beta. Once User A's auto-merge is in
-`release-5.8.0`, User B's subsequent auto-merge into that branch contains
-User A's changes. The contamination happens before we know there's a conflict.
-
-### The Fundamental Constraint
-
-To achieve isolation, you **cannot** put auto-merges into release branches
-until they've been verified all the way to main. This is the core insight
-behind the merge-forward design—it's not over-engineering, it's the minimum
-viable solution.
+For alternatives considered and rejected, see [this comment on issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3#issuecomment-3723369938).
 
 ## GitHub Action
 
