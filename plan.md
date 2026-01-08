@@ -44,9 +44,9 @@ See [Issue #3](https://github.com/SpiderStrategies/merge-bot/issues/3) for detai
 
 ## Phase 7: Update Release Branches on Chain Completion
 
-- [ ] Detect when merge-forward chain reaches main successfully
-- [ ] Fast-forward (or merge) each release branch to its corresponding merge-forward commit
-- [ ] Advance all `branch-here` pointers
+- [x] Detect when merge-forward chain reaches main successfully
+- [x] Fast-forward (or merge) each release branch to its corresponding merge-forward commit
+- [x] Advance all `branch-here` pointers
 
 ## Phase 8: Cleanup
 

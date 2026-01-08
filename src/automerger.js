@@ -209,6 +209,9 @@ class AutoMerger {
 		const targetMergeCount = mergeTargets.length
 		this.core.info(`Merge Targets: ${mergeTargets}`)
 
+		// Track branches we successfully merge into for later updates
+		const mergedBranches = []
+
 		let mergeCount = 0
 		for (; mergeCount < targetMergeCount; mergeCount++) {
 			const branch = mergeTargets[mergeCount]
@@ -219,6 +222,7 @@ class AutoMerger {
 				if (!await this.merge({ branch })) {
 					break
 				}
+				mergedBranches.push(branch)
 			} catch (e) {
 				this.core.error(e.message)
 				this.core.setFailed(e.message)
@@ -231,11 +235,117 @@ class AutoMerger {
 
 		if (allMergesPassed) {
 			this.core.info('All merges are complete')
+			await this.updateReleaseBranches(mergedBranches)
 			await this.git.deleteBranch(this.prBranch)
 		} else if (this.conflictBranch) {
 			this.generateMergeConflictWarning()
 		}
 		return allMergesPassed
+	}
+
+	/**
+	 * Updates release branches to match their merge-forward commits after a
+	 * successful merge chain completion.
+	 *
+	 * This method finds ALL merge-forward branches for this PR (not just the ones
+	 * merged in this invocation) to handle the case where the chain was interrupted
+	 * by conflicts and resumed in a subsequent action invocation.
+	 *
+	 * @param {string[]} mergedBranches - Branches merged in this invocation (unused, kept for compatibility)
+	 */
+	async updateReleaseBranches(mergedBranches) {
+		const prNumber = this.isMergeForwardPR() ? this.getOriginalPRNumber() : this.prNumber
+		const branchNames = await this.findMergeForwardBranches(prNumber)
+
+		if (branchNames.length === 0) {
+			this.core.info('No merge-forward branches found')
+			return
+		}
+
+		this.core.info(`Found merge-forward branches: ${branchNames}`)
+
+		for (const mergeForwardBranch of branchNames) {
+			const normalizedTarget = mergeForwardBranch.replace(/^merge-forward-pr-\d+-/, '')
+			const targetBranch = this.denormalizeBranchName(normalizedTarget)
+
+			if (targetBranch === this.terminalBranch) {
+				this.core.info(`Skipping terminal branch: ${targetBranch}`)
+				continue
+			}
+
+			await this.updateSingleReleaseBranch(mergeForwardBranch, targetBranch)
+		}
+	}
+
+	/**
+	 * Finds all merge-forward branches for a given PR number by querying remote.
+	 *
+	 * @param {string} prNumber - The PR number to search for
+	 * @returns {Promise<string[]>} Array of merge-forward branch names (e.g., ['merge-forward-pr-123-release-5-8-0'])
+	 */
+	async findMergeForwardBranches(prNumber) {
+		this.core.info(`Finding all merge-forward branches for PR #${prNumber}`)
+
+		const mergeForwardPattern = `${MB_BRANCH_FORWARD_PREFIX}${prNumber}-`
+		const remoteBranches = await this.shell.exec(`git ls-remote --heads origin '${mergeForwardPattern}*'`)
+
+		if (!remoteBranches) {
+			return []
+		}
+
+		const branchNames = remoteBranches.split('\n')
+			.filter(line => line.trim())
+			.map(line => {
+				const parts = line.split('\t')
+				return parts.length > 1 ? parts[1] : null
+			})
+			.filter(ref => ref !== null)
+			.map(ref => ref.replace('refs/heads/', ''))
+
+		return branchNames
+	}
+
+	/**
+	 * Updates a single release branch to match its merge-forward commit.
+	 * Attempts fast-forward first, falls back to merge commit if needed.
+	 *
+	 * @param {string} mergeForwardBranch - The merge-forward branch name (e.g., 'merge-forward-pr-123-release-5-8-0')
+	 * @param {string} targetBranch - The actual release branch to update (e.g., 'release-5.8.0')
+	 */
+	async updateSingleReleaseBranch(mergeForwardBranch, targetBranch) {
+		this.core.info(`Fast-forwarding ${targetBranch} to ${mergeForwardBranch}`)
+		await this.git.checkout(targetBranch)
+
+		const mergeForwardCommit = await this.shell.exec(`git rev-parse origin/${mergeForwardBranch}`)
+
+		try {
+			await this.git.merge(mergeForwardCommit, '--ff-only')
+			this.core.info(`Fast-forwarded ${targetBranch}`)
+		} catch (e) {
+			this.core.info(`Fast-forward failed, creating merge commit for ${targetBranch}`)
+			await this.git.merge(mergeForwardCommit, '--no-ff')
+		}
+
+		await this.git.push(`origin ${targetBranch}`)
+	}
+
+	/**
+	 * Converts a normalized branch name back to the actual branch name.
+	 * This tries to match against configured branches to find the right format.
+	 *
+	 * @param {string} normalized - Normalized branch name (e.g., "release-5-8-0")
+	 * @returns {string} - Actual branch name (e.g., "release-5.8.0")
+	 */
+	denormalizeBranchName(normalized) {
+		// Check if any configured branch normalizes to this
+		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
+		for (const target of this.config.mergeTargets) {
+			if (normalizeForBranchName(target) === normalized) {
+				return target
+			}
+		}
+		// Fallback: return normalized name as-is
+		return normalized
 	}
 
 	// This will be displayed in the warning annotation on the workflow run
