@@ -6505,6 +6505,16 @@ class Git {
 		await this.shell.exec(`git config user.email "${email}"`)
 		await this.shell.exec(`git config user.name "${name}"`)
 	}
+
+	/**
+	 * Pushes commits to a remote repository.
+	 *
+	 * @param {string} [args=''] - Optional git push arguments (e.g., '--force origin my-branch')
+	 * @returns {Promise<string>}
+	 */
+	async push(args = '') {
+		return this.shell.exec(`git push ${args}`.trim())
+	}
 }
 
 module.exports = Git
