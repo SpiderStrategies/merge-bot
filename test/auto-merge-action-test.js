@@ -42,6 +42,7 @@ tap.test(`initialize state`, async t => {
 	const coreMock = mockCore({})
 	const action = new TestAutoMerger({
 		prNumber: 123,
+		prCommitSha: 'abc123def456',
 		pullRequest: { merge_commit_sha: 'abc123' },
 		config: { mergeTargets: ['main'] },
 		core: coreMock
@@ -50,6 +51,7 @@ tap.test(`initialize state`, async t => {
 	await action.initializeState()
 
 	t.equal(action.terminalBranch, 'main')
+	t.equal(action.lastSuccessfulMergeRef, 'abc123def456', 'should initialize lastSuccessfulMergeRef to prCommitSha')
 	t.ok(coreMock.infoMsgs.some(msg => msg.includes('mergeTargets')))
 	t.ok(coreMock.infoMsgs.some(msg => msg.includes('terminal branch')))
 })
@@ -129,6 +131,8 @@ tap.test('executeMerges', async t => {
 	t.test('stops merging on first conflict', async t => {
 		const execCalls = []
 		const core = mockCore({})
+		core.startGroup = () => {}
+		core.endGroup = () => {}
 
 		const mockGit = {
 			async checkout(branch) {
@@ -164,6 +168,8 @@ tap.test('executeMerges', async t => {
 	t.test('handles merge exception', async t => {
 		const execCalls = []
 		const core = mockCore({})
+		core.startGroup = () => {}
+		core.endGroup = () => {}
 
 		const mockGit = {
 			async checkout(branch) {
@@ -635,6 +641,15 @@ tap.test('merge', async t => {
 		let commitCalled = false
 		const core = mockCore({})
 
+		const mockShell = {
+			async exec(cmd) {
+				if (cmd === 'git rev-parse HEAD') {
+					return 'newMergeCommit789'
+				}
+				return ''
+			}
+		}
+
 		const mockGit = {
 			async pull() {},
 			async merge(sha, options) {
@@ -674,14 +689,18 @@ tap.test('merge', async t => {
 			prNumber: 789,
 			prBranch: 'my-feature',
 			core,
+			shell: mockShell,
 			git: mockGit,
 			gh: mockGh
 		})
+
+		action.lastSuccessfulMergeRef = 'originalCommit123'
 
 		const result = await action.merge({branch: 'release-5.8'})
 
 		t.equal(result, true, 'should return true on success')
 		t.ok(commitCalled, 'should create commit when merge successful')
+		t.equal(action.lastSuccessfulMergeRef, 'newMergeCommit789', 'should update lastSuccessfulMergeRef to new merge commit')
 	})
 
 	t.test('handles conflicts', async t => {
