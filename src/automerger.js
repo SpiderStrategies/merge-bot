@@ -381,6 +381,9 @@ class AutoMerger {
 		await this.git.createBranch(currentMergeForward, `origin/${targetRef}`)
 		await this.git.push(`--force origin ${currentMergeForward}`)
 
+		// Switch to the merge-forward branch to perform the merge there
+		await this.git.checkout(currentMergeForward)
+
 		// Merge the PR's progress (lastSuccessfulMergeRef) INTO the target-based branch.
 		// This is the forward direction: few PR commits merged into the target.
 		const commitMessage = `auto-merge of ${this.lastSuccessfulMergeRef} into \`${branch}\` from \`${this.prBranch}\` ` +
@@ -409,10 +412,9 @@ class AutoMerger {
 			this.lastSuccessfulMergeRef = await this.shell.exec('git rev-parse HEAD')
 			this.lastSuccessfulBranch = branch
 
-			// Update merge-forward branch to point to the new merge commit
-			// The branch was already created at the start of merge(), so we just need to move it
+			// Push the merge-forward branch with the new commit
+			// (We're already on it after checkout + commit, so just push)
 			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
-			await this.shell.exec(`git branch -f ${mergeForwardBranch} ${this.lastSuccessfulMergeRef}`)
 			await this.git.push(`--force origin ${mergeForwardBranch}`)
 		}
 		return true

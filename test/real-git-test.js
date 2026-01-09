@@ -120,6 +120,134 @@ tap.test('Phase 1: Basic merge-forward (no conflicts)', async t => {
 	t.ok(files.includes('new-feature.txt'), 'new file should be in merged branch')
 })
 
+tap.test('Phase 1b: Multi-step chain (merges through release, then conflicts at main)', async t => {
+	// This test verifies a PR that merges cleanly through intermediate release
+	// branches but then conflicts when reaching main
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	// Create release-5.7.2 (PR base)
+	git('checkout -b release-5.7.2')
+	git('push origin release-5.7.2')
+	git('branch branch-here-release-5.7.2')
+	git('push origin branch-here-release-5.7.2')
+
+	// Create release-5.8.0 (same content as 5.7.2 - no conflict here)
+	git('checkout -b release-5.8.0')
+	git('push origin release-5.8.0')
+	git('branch branch-here-release-5.8.0')
+	git('push origin branch-here-release-5.8.0')
+
+	// Create main with DIFFERENT content (will conflict)
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'test.txt'), 'MAIN VERSION\n')
+	git('add test.txt')
+	git('commit -m "Main version"')
+	git('push origin main')
+	git('branch branch-here-main')
+	git('push origin branch-here-main')
+
+	// Simulate PR: modify test.txt in release-5.7.2
+	git('checkout release-5.7.2')
+	await writeFile(join(repoDir, 'test.txt'), 'PR CHANGE\n')
+	git('add test.txt')
+	git('commit -m "PR change"')
+	const prCommit = git('rev-parse HEAD')
+	git('push origin release-5.7.2')
+
+	// Use real Shell and Git
+	const { Shell, Git } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.startsWith('gh ')) return ''
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	const gitHelper = new Git(shell)
+
+	// Track what happens
+	let conflictsDetected = false
+	let conflictBranch = null
+	const createdBranches = []
+
+	const AutoMerger = require('../src/automerger')
+	class TestAutoMerger extends AutoMerger {
+		async handleConflicts(branch) {
+			conflictsDetected = true
+			conflictBranch = branch
+			this.conflictBranch = branch
+			await this.git.reset(branch, '--hard')
+		}
+	}
+
+	// Override createBranch to track branch creation
+	const originalCreateBranch = gitHelper.createBranch.bind(gitHelper)
+	gitHelper.createBranch = async (name, ref) => {
+		createdBranches.push(name)
+		return originalCreateBranch(name, ref)
+	}
+
+	// Override commit to use simple git commit (avoids .commitmsg file issues)
+	gitHelper.commit = async (message, author) => {
+		const authorStr = `${author.name} <${author.email}>`
+		// Escape backticks and quotes in message to avoid shell interpretation
+		const escapedMsg = message.replace(/`/g, "'").replace(/"/g, '\\"')
+		return shell.exec(`git commit -m "${escapedMsg}" --author="${authorStr}"`)
+	}
+
+	const action = new TestAutoMerger({
+		pullRequest: { merged: true, head: { sha: prCommit } },
+		repository: { owner: 'test', name: 'repo' },
+		config: {
+			branches: {},
+			mergeTargets: ['release-5.8.0', 'main'],
+			getBranchAlias: (branch) => branch.replace(/\./g, '-')
+		},
+		prNumber: 999,
+		prAuthor: 'testuser',
+		prTitle: 'Test multi-step',
+		prBranch: 'feature',
+		baseBranch: 'release-5.7.2',
+		prCommitSha: prCommit,
+		core,
+		shell,
+		gh: {
+			github: { context: { serverUrl: 'https://github.com', runId: 1, repo: { owner: 'test', repo: 'repo' } } },
+			async createIssue() { return { data: { number: 69517, html_url: 'http://example.com' } } },
+			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' } } }] } }
+		},
+		git: gitHelper
+	})
+
+	action.terminalBranch = 'main'
+	action.lastSuccessfulBranch = 'release-5.7.2'
+	action.lastSuccessfulMergeRef = prCommit
+
+	// Execute the full merge chain
+	const result = await action.executeMerges(['release-5.8.0', 'main'])
+
+	// Verify chain stopped at main (conflict)
+	t.equal(result, false, 'executeMerges should return false when conflict at main')
+	t.ok(conflictsDetected, 'conflict should be detected at main')
+	t.equal(conflictBranch, 'main', 'conflict should be at main, not release-5.8.0')
+
+	// Verify merge-forward branch was created for successful step
+	t.ok(createdBranches.includes('merge-forward-pr-999-release-5-8-0'),
+		'should create merge-forward branch for successful release-5.8.0 merge')
+
+	// Verify merge-forward branch was created for conflict step
+	t.ok(createdBranches.includes('merge-forward-pr-999-main'),
+		'should create merge-forward branch for main (before conflict detected)')
+})
+
 tap.test('Phase 2: Conflict detection at main', async t => {
 	const { repoDir, originDir, git } = await createTestRepo()
 
