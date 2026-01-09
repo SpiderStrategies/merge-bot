@@ -68,27 +68,30 @@ while IFS=' ' read -r source target; do
 
   # Check if already merged (source is ancestor of target)
   if git merge-base --is-ancestor "origin/$source" HEAD; then
-    log_info "  Already merged, skipping."
-    continue
+    log_info "  Already merged."
+  else
+    # Attempt merge
+    if ! git merge "origin/$source" -m "Merge $source into $target"; then
+      echo ""
+      log_error "CONFLICT: Could not merge $source into $target"
+      echo ""
+      echo "Resolve the conflict manually:"
+      echo "  1. You are on branch '$target'"
+      echo "  2. Resolve conflicts in your editor"
+      echo "  3. git add <resolved files>"
+      echo "  4. git commit"
+      echo "  5. Re-run this script"
+      exit 1
+    fi
   fi
 
-  # Attempt merge
-  if ! git merge "origin/$source" -m "Merge $source into $target"; then
-    echo ""
-    log_error "CONFLICT: Could not merge $source into $target"
-    echo ""
-    echo "Resolve the conflict manually:"
-    echo "  1. You are on branch '$target'"
-    echo "  2. Resolve conflicts in your editor"
-    echo "  3. git add <resolved files>"
-    echo "  4. git commit"
-    echo "  5. Re-run this script"
-    exit 1
+  # Push if there are unpushed commits
+  if ! git diff --quiet HEAD "origin/$target" 2>/dev/null; then
+    git push origin "$target"
+    log_info "  Pushed successfully."
+  else
+    log_info "  Already up to date with origin."
   fi
-
-  # Push the merge
-  git push origin "$target"
-  log_info "  Merged and pushed successfully."
 
 done <<< "$MERGE_OPS"
 
