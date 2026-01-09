@@ -49,7 +49,7 @@ After all merges complete successfully:
 When a conflict occurs:
 
 1. Script exits with message like:
-   ```
+   ```text
    CONFLICT: Could not merge release-5.7.1 into release-5.7.2
 
    Resolve the conflict manually:
@@ -87,13 +87,13 @@ The script reads `.spider-merge-bot-config.json`:
 }
 ```
 
-The script processes these in the order defined (jq preserves JSON object key order).
+The script processes these in the order defined (using jq's `to_entries` which preserves input order).
 
 ## Design Decisions
 
 1. **No confirmation prompts** - KISS. Origin provides backups if we need to undo.
 2. **Issue identification** - Use the `merge conflict` label (all merge conflict issues have this label).
-3. **Merge operation order** - jq preserves JSON object key order, so we iterate `mergeOperations` as defined in the config file.
+3. **Merge operation order** - We use jq's `to_entries` to iterate `mergeOperations` in the order defined in the config file.
 
 ## Pseudocode
 
