@@ -375,7 +375,8 @@ class AutoMerger {
 	}) {
 		// Create merge-forward for current position BEFORE attempting the merge.
 		// If conflict occurs, handleConflicts needs this branch to exist.
-		const currentMergeForward = this.createMergeForwardBranchName(this.lastSuccessfulBranch)
+		// Use the current target branch, not lastSuccessfulBranch, to avoid duplicate names.
+		const currentMergeForward = this.createMergeForwardBranchName(branch)
 		await this.git.createBranch(currentMergeForward, this.lastSuccessfulMergeRef)
 		await this.git.push(`--force origin ${currentMergeForward}`)
 
@@ -407,9 +408,10 @@ class AutoMerger {
 			this.lastSuccessfulMergeRef = await this.shell.exec('git rev-parse HEAD')
 			this.lastSuccessfulBranch = branch
 
-			// Create/update merge-forward branch to track this PR's isolated merge chain
+			// Update merge-forward branch to point to the new merge commit
+			// The branch was already created at the start of merge(), so we just need to move it
 			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
-			await this.git.createBranch(mergeForwardBranch, this.lastSuccessfulMergeRef)
+			await this.shell.exec(`git branch -f ${mergeForwardBranch} ${this.lastSuccessfulMergeRef}`)
 			await this.git.push(`--force origin ${mergeForwardBranch}`)
 		}
 		return true
