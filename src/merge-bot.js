@@ -54,17 +54,17 @@ async function run() {
  * Sets the final status outputs based on the automerge phase.
  * The orchestrator owns these outputs to prevent phases from clobbering each other.
  *
+ * Merge conflicts are expected behavior and count as success - an issue was
+ * created for the developer to resolve. Only actual errors (exceptions) should
+ * result in failure status.
+ *
  * @param {AutoMerger} automerger The automerger instance
  */
 function setFinalStatus(automerger) {
-	if (automerger.conflictBranch) {
-		// Automerge had conflicts - set warning status
-		core.setOutput('status', 'warning')
-		core.setOutput('status-message', automerger.statusMessage)
-	} else {
-		core.setOutput('status', 'success')
-		core.setOutput('status-message', `<${automerger.actionUrl}|Action Run>`)
-	}
+	// Both successful merges AND handled conflicts are "success"
+	// Conflicts are expected - an issue was created for the developer
+	core.setOutput('status', 'success')
+	core.setOutput('status-message', automerger.statusMessage ?? `<${automerger.actionUrl}|Action Run>`)
 }
 
 run()

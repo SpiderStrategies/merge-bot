@@ -28,21 +28,25 @@ function cleanupIssueCommentFile(t) {
 
 process.env.GITHUB_REPOSITORY = 'spiderstrategies/unittest'
 
-tap.test(`generateMergeWarning`, async t => {
+tap.test(`generateMergeConflictNotice logs info instead of warning`, async t => {
+	// Merge conflicts are expected behavior - they result in an issue being created
+	// for the developer to resolve. This should NOT be a warning; it's a success.
+	// Warnings make the action show as "passed with warnings" in Slack which is confusing.
 	const coreMock = mockCore({})
 	const action = new TestAutoMerger({
 		prNumber: 123,
 		core: coreMock
 	})
-	action.generateMergeConflictWarning()
+	action.generateMergeConflictNotice()
 
 	const expectedStatus = '<https://github.com/sample/repo/issues/123|PR #123> ' +
 		'<https://github.com/sample/repo/1#issuecomment-123xyz|Issue> ' +
 		'<https://github.com/sample/repo/actions/runs/1935306317|Action Run>'
 
 	t.equal(action.statusMessage, expectedStatus)
-	t.equal(coreMock.warningMsgs.length, 1, 'should have warning')
-	t.equal(coreMock.warningMsgs[0], expectedStatus, 'warning should match status message')
+	t.equal(coreMock.warningMsgs.length, 0, 'should NOT emit warning for expected conflict')
+	t.ok(coreMock.infoMsgs.some(msg => msg.includes('PR #123')),
+		'should log conflict notice as info instead')
 })
 
 tap.test(`initialize state`, async t => {
@@ -290,8 +294,8 @@ tap.test('executeMerges', async t => {
 				return branch !== 'release-5.8'
 			}
 
-			generateMergeConflictWarning() {
-				this.warningGenerated = true
+			generateMergeConflictNotice() {
+				this.noticeGenerated = true
 			}
 		}
 
@@ -307,7 +311,7 @@ tap.test('executeMerges', async t => {
 
 		t.equal(result, false, 'should return false when merge fails')
 		t.equal(gitCalls.filter(c => c.startsWith('checkout')).length, 2, 'should stop after failed merge')
-		t.equal(action.warningGenerated, true, 'should generate conflict warning')
+		t.equal(action.noticeGenerated, true, 'should log conflict notice')
 	})
 
 	t.test('handles merge exception', async t => {
@@ -544,9 +548,9 @@ tap.test('handleConflicts', async t => {
 		t.notOk(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5-8-0')),
 			'should NOT create previous merge-forward (merge() creates it at start)')
 
-		// merge-forward for the target still points to main
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-main:main')),
-			'should create merge-forward for target pointing to main')
+		// merge-forward for the target is ALSO NOT created here - merge() creates it at start
+		t.notOk(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-main')),
+			'should NOT create merge-forward for target (merge() already created it)')
 	})
 
 	t.test('skips when no conflicts found', async t => {
@@ -571,6 +575,89 @@ tap.test('handleConflicts', async t => {
 
 		t.equal(gitCommands.length, 0, 'should not call git reset when no conflicts')
 		t.notOk(action.conflictBranch, 'should not set conflictBranch when no conflicts')
+	})
+
+	t.test('does NOT create duplicate merge-forward branch (already created by merge())', async t => {
+		// This test reproduces the bug from production where handleConflicts() tried to
+		// create merge-forward-pr-69510-main but it already existed (created by merge())
+		// Error: fatal: a branch named 'merge-forward-pr-69510-main' already exists
+		const core = mockCore({})
+		const shellCommands = []
+		const gitCommands = []
+
+		const shell = createMockShell(core, (cmd) => {
+			shellCommands.push(cmd)
+			if (cmd.startsWith('git diff --name-only')) {
+				return 'src/file1.js'
+			}
+			return ''
+		})
+
+		const git = createMockGit(shell, { callTracker: gitCommands })
+		git.createBranch = async (branchName, ref) => {
+			gitCommands.push(`createBranch:${branchName}:${ref}`)
+			// Simulate git error if trying to create branch that already exists
+			if (branchName === 'merge-forward-pr-999-main') {
+				throw new Error(`fatal: a branch named '${branchName}' already exists`)
+			}
+		}
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async createIssue(options) {
+				return { data: { number: 68586, html_url: 'https://github.com/sample/repo/issues/68586' } }
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test', email: 'test@example.com' },
+							message: 'Test commit'
+						}
+					}]
+				}
+			}
+		}
+
+		const action = new TestAutoMerger({
+			prNumber: 999,
+			prAuthor: 'testdev',
+			prCommitSha: 'abc123456789',
+			baseBranch: 'release-5.8.0',
+			config: {
+				branches: { 'main': { milestoneNumber: 42 } },
+				mergeTargets: ['release-5.8.0', 'main']
+			},
+			core,
+			shell,
+			git,
+			gh: mockGh
+		})
+		action.issueNumber = 12345
+		action.lastSuccessfulMergeRef = 'mergeCommit456'
+		action.lastSuccessfulBranch = 'release-5.8.0'
+		action.terminalBranch = 'main'
+
+		// This should NOT throw even though merge-forward-pr-999-main already exists
+		// because handleConflicts should NOT try to create it (merge() already did)
+		await action.handleConflicts('main')
+
+		// Verify that we did NOT attempt to create the merge-forward branch for main
+		const mergeForwardCreations = gitCommands.filter(c =>
+			c.includes('createBranch:merge-forward-pr-999-main')
+		)
+		t.equal(mergeForwardCreations.length, 0,
+			'should NOT create merge-forward branch in handleConflicts (already created by merge())')
+
+		// We SHOULD still create the merge-conflicts branch
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586')),
+			'should still create merge-conflicts branch')
 	})
 
 	t.test('PR merges successfully through entire chain creating unique merge-forward branches', async t => {
@@ -784,7 +871,9 @@ tap.test('createIssue', async t => {
 })
 
 tap.test('writeComment', async t => {
-	t.test('generates complete conflict resolution instructions', async t => {
+	t.test('generates complete conflict resolution instructions (conflict at first target)', async t => {
+		// When conflict is at first target (baseBranch == lastSuccessfulBranch),
+		// we merge the PR commit directly since there's no prior merge-forward branch
 		const core = mockCore({})
 		const { readFile } = require('fs/promises')
 
@@ -824,9 +913,11 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('for issue #54321'), 'should reference issue number')
 		t.ok(content.includes('git fetch'), 'should include git fetch command')
 		t.ok(content.includes('merge-conflicts-99999-release-5-7-to-release-5-8'), 'should use merge-conflicts branch name')
-		t.ok(content.includes('git merge origin/merge-forward-pr-12345-release-5-7'),
-			'should merge the previous step forward into merge-conflicts')
-		t.notOk(content.includes('git merge xyz789abc123'), 'should not merge the commit SHA directly')
+		// When conflict at first target, we merge PR commit directly
+		t.ok(content.includes('git merge xyz789abc123'),
+			'should merge PR commit directly (no prior merge-forward at first target)')
+		t.notOk(content.includes('git merge origin/merge-forward-pr-12345-release-5-7'),
+			'should NOT reference non-existent merge-forward for base branch')
 		t.notOk(content.includes('git merge branch-here-release-5.8'),
 			'should NOT merge target backward (thousands of commits)')
 		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
@@ -949,6 +1040,54 @@ tap.test('writeComment', async t => {
 			'should not use old issue-* branch naming scheme')
 		t.notOk(content.includes('issue-99999-pr-12345'),
 			'should not use original PR issue number (99999)')
+	})
+
+	t.test('when conflict at first target, merges PR commit directly (no prior merge-forward)', async t => {
+		// This test reproduces the production bug from issue #69524 where:
+		// 1. PR #69510 was merged to release-5.8.0 (base branch)
+		// 2. Conflict occurred at main (first merge target)
+		// 3. Issue instructions referenced merge-forward-pr-69510-release-5-8-0
+		// 4. But that branch never existed (only merge-forward for targets, not base)
+		const core = mockCore({})
+		const { readFile } = require('fs/promises')
+
+		const action = new TestAutoMerger({
+			prNumber: 69510,
+			prAuthor: 'ryanbeery',
+			prCommitSha: '42d0ce2ec5875c5ee3784151a6b4fa34414e01e4',
+			baseBranch: 'release-5.8.0',  // PR was merged here
+			config: {
+				getBranchAlias: () => '5.8.1'
+			},
+			core
+		})
+		action.terminalBranch = 'main'
+		// lastSuccessfulBranch equals baseBranch because conflict is at first target
+		action.lastSuccessfulBranch = 'release-5.8.0'
+
+		const filename = await action.writeComment({
+			branch: 'main',
+			issueNumber: 69497,
+			conflicts: 'cms/src/com/spider/cms/forms/api/FormsController.java',
+			conflictIssueNumber: 69524,
+			conflictBranchName: 'merge-conflicts-69524-release-5-8-0-to-main'
+		})
+
+		cleanupIssueCommentFile(t)
+
+		const content = await readFile(filename, 'utf-8')
+
+		// Should NOT reference merge-forward-pr-69510-release-5-8-0 (doesn't exist!)
+		t.notOk(content.includes('merge-forward-pr-69510-release-5-8-0'),
+			'should NOT reference merge-forward branch for base (it does not exist)')
+
+		// Should reference the PR commit SHA directly
+		t.ok(content.includes('42d0ce2ec5875c5ee3784151a6b4fa34414e01e4'),
+			'should merge the PR commit SHA directly when no prior merge-forward exists')
+
+		// Should still target merge-forward-pr-69510-main for the resolution PR
+		t.ok(content.includes('merge-forward-pr-69510-main'),
+			'should target merge-forward branch for conflict resolution PR')
 	})
 })
 

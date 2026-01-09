@@ -238,7 +238,7 @@ class AutoMerger {
 			await this.updateReleaseBranches(mergedBranches)
 			await this.git.deleteBranch(this.prBranch)
 		} else if (this.conflictBranch) {
-			this.generateMergeConflictWarning()
+			this.generateMergeConflictNotice()
 		}
 		return allMergesPassed
 	}
@@ -348,14 +348,18 @@ class AutoMerger {
 		return normalized
 	}
 
-	// This will be displayed in the warning annotation on the workflow run
-	// AND included in the slack message
-	generateMergeConflictWarning() {
+	/**
+	 * Logs a notice about the merge conflict that was detected and handled.
+	 * This is NOT a warning - merge conflicts are expected behavior.
+	 * An issue has been created for the developer to resolve.
+	 * The status message is formatted for Slack and included in notifications.
+	 */
+	generateMergeConflictNotice() {
 		// Slack is "special" https://api.slack.com/reference/surfaces/formatting#linking-urls
 		this.statusMessage = `<${this.repoUrl}/issues/${this.prNumber}|PR #${this.prNumber}> ` +
 			`<${this.issueUrl}|Issue> ` +
 			`<${this.actionUrl}|Action Run>`
-		this.core.warning(this.statusMessage)
+		this.core.info(`Merge conflict detected and issue created: ${this.statusMessage}`)
 	}
 
 	/**
@@ -438,10 +442,8 @@ class AutoMerger {
 				newIssueNumber, this.lastSuccessfulBranch, branch)
 			await this.git.createBranch(encodedBranchName, this.getBranchHereRef(branch))
 
-			// Create merge-forward target branch pointing to branch-here
-			// This is where the conflict resolution PR will merge to
-			const mergeForwardBranch = this.createMergeForwardBranchName(branch)
-			await this.git.createBranch(mergeForwardBranch, this.getBranchHereRef(branch))
+			// Note: merge-forward branch for the target was already created by merge()
+			// at the start of the merge attempt, so we don't create it here.
 
 			await new IssueResolver({
 				prNumber: this.prNumber,
@@ -546,9 +548,16 @@ class AutoMerger {
 		const issueText = issueNumber ? `for issue #${issueNumber}` : ''
 		const mergeForwardBranch = this.createMergeForwardBranchName(branch)
 
-		// Developer merges the previous merge-forward INTO merge-conflicts.
+		// Developer merges the previous step's changes INTO merge-conflicts.
 		// This pulls the PR's few commits forward, not thousands from the target.
+		//
+		// If the conflict is at the first merge target (lastSuccessfulBranch == baseBranch),
+		// there is no prior merge-forward branch - we merge the PR commit directly.
+		// Otherwise, we merge the previous merge-forward branch.
+		const isFirstTarget = this.lastSuccessfulBranch === this.baseBranch
 		const previousMergeForward = this.createMergeForwardBranchName(this.lastSuccessfulBranch)
+		const mergeRef = isFirstTarget ? this.prCommitSha : `origin/${previousMergeForward}`
+		const mergeRefDisplay = isFirstTarget ? this.prCommitSha : previousMergeForward
 
 		let lines = [`## Automatic Merge Failed`,
 			`@${this.prAuthor} changes from pull request #${this.prNumber} ${issueText} couldn't be [merged forward automatically](${this.actionUrl}). `,
@@ -558,7 +567,7 @@ class AutoMerger {
 			'Run these commands to perform the merge, then open a new pull request against the `' + mergeForwardBranch + '` branch.',
 			'1. `git fetch`',
 			`1. \`git checkout ${conflictBranchName}\``,
-			`1. \`git merge origin/${previousMergeForward} -m "Merge ${previousMergeForward} Fixes #${conflictIssueNumber}"\``,
+			`1. \`git merge ${mergeRef} -m "Merge ${mergeRefDisplay} Fixes #${conflictIssueNumber}"\``,
 			`1. \`git push\``,
 			`1. \`createPR -b ${mergeForwardBranch}\` (Optional; requires [Spider Shell](https://github.com/SpiderStrategies/spider-shell))`,
 			'',
