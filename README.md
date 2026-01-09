@@ -24,6 +24,16 @@ This file is automatically available to Cursor AI for context.
 
 **Making changes**: Edit files in `src/`, run `npm test`, push to main. The `dist/` folder is built automatically.
 
+## Manual Recovery
+
+If the merge bot breaks or branches get out of sync, use `manual-merge.sh` to reset everything to a pristine state. Run it from the Spider Impact repo root:
+
+```bash
+~/git/merge-bot/manual-merge.sh
+```
+
+The script merges all release branches forward, updates branch-here pointers, and cleans up stale merge-forward/merge-conflicts branches and issues. It's idempotent—if a conflict occurs, resolve it, commit, and re-run.
+
 ## Related Issues
 
 - Original implementation: #42921
