@@ -36718,16 +36718,17 @@ class AutoMerger {
 		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
 		options = '--no-commit --no-ff'
 	}) {
-		// Create merge-forward for current position BEFORE attempting the merge.
-		// If conflict occurs, handleConflicts needs this branch to exist.
-		// Use the current target branch, not lastSuccessfulBranch, to avoid duplicate names.
+		// Create merge-forward based on the TARGET's branch-here, not the PR's progress.
+		// This ensures we merge FORWARD (few commits) not backward (thousands).
+		// The merge direction is: PR changes -> into -> target branch
 		const currentMergeForward = this.createMergeForwardBranchName(branch)
-		await this.git.createBranch(currentMergeForward, this.lastSuccessfulMergeRef)
+		const targetRef = this.getBranchHereRef(branch)
+		await this.git.createBranch(currentMergeForward, `origin/${targetRef}`)
 		await this.git.push(`--force origin ${currentMergeForward}`)
 
-		// This is the commit that was just merged into the PRs base
-		const sha = this.pullRequest.head.sha
-		const commitMessage = `auto-merge of ${sha} into \`${branch}\` from \`${this.prBranch}\` ` +
+		// Merge the PR's progress (lastSuccessfulMergeRef) INTO the target-based branch.
+		// This is the forward direction: few PR commits merged into the target.
+		const commitMessage = `auto-merge of ${this.lastSuccessfulMergeRef} into \`${branch}\` from \`${this.prBranch}\` ` +
 			`triggered by (#${this.prNumber}) on \`${this.baseBranch}\``
 
 		this.core.info(commitMessage)
@@ -36735,7 +36736,7 @@ class AutoMerger {
 		let mergeResult
 		try {
 			await this.git.pull() // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
-			mergeResult = await this.git.merge(sha, options)
+			mergeResult = await this.git.merge(this.lastSuccessfulMergeRef, options)
 			this.core.info(mergeResult)
 		} catch (e) {
 			await this.handleConflicts(branch)
