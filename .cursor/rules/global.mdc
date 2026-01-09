@@ -91,10 +91,10 @@ merge conflicts, preventing branch-here pointers from advancing past them.
 - `merge-conflicts-68590-release-5-7-2-to-release-5-8-0`
 
 **How They Work**:
-1. Bot creates merge-conflicts branch pointing to the last successful merge-forward commit
-2. Developer checks out the branch and merges the target `branch-here` branch
+1. Bot creates merge-conflicts branch based on the TARGET's branch-here pointer
+2. Developer checks out the branch and merges the PR's progress (previous merge-forward) INTO it
 3. Developer resolves conflicts and pushes
-4. Developer creates PR from merge-conflicts to the next merge-forward branch
+4. Developer creates PR from merge-conflicts to the target's merge-forward branch
 5. When PR merges, the merge-conflicts branch is deleted
 6. Bot continues the merge-forward chain
 
@@ -124,6 +124,36 @@ is based on their auto-merge, User B will see User A's conflicts mixed with thei
 - User B's chain also merges with `branch-here-release-5.8.0` (still at X!)
 - User B's chain does NOT contain User A's changes
 - Each user only sees their own conflicts
+
+## Merge Direction: Forward, Not Backward
+
+**Key principle**: Always merge from lower versions to higher versions (forward).
+
+### Why Forward Merging Matters
+
+Merging `release-5.8.0` → `main` applies only the PR's commits (few).
+Merging `main` → `release-5.8.0` applies all of main's divergent history (thousands).
+
+### Conflict Resolution: Merge PR Progress Forward
+
+Developer merges the previous `merge-forward` branch INTO `merge-conflicts`:
+
+```bash
+git checkout merge-conflicts-999-release-5-8-0-to-main  # Based on main
+git merge origin/merge-forward-pr-123-release-5-8-0    # PR's progress (few commits)
+```
+
+**Special case**: At the FIRST merge target, there's no prior merge-forward
+branch, so merge the original PR commit SHA directly
+
+### Branch Creation: Always Based on TARGET
+
+Both `merge-forward` and `merge-conflicts` branches are created from the
+**target** branch (its `branch-here` pointer), not the source. This ensures
+we merge the PR's few commits INTO the target.
+
+- `merge-forward-pr-123-release-5-8-0` → based on `branch-here-release-5.8.0`
+- `merge-conflicts-999-release-5-8-0-to-main` → based on `main`
 
 ## Design Rationale: Why So Many Branches?
 
