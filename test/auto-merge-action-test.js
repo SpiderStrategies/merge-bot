@@ -1322,7 +1322,8 @@ tap.test('merge', async t => {
 
 		t.equal(result, true, 'should return true even when already merged')
 		t.ok(gitCalls.find(c => c.includes('pull')), 'should pull before merging')
-		t.ok(gitCalls.find(c => c.includes('merge:abc123')), 'should attempt merge')
+		// Should merge lastSuccessfulMergeRef (PR's progress), not pullRequest.head.sha
+		t.ok(gitCalls.find(c => c.includes('merge:originalCommit')), 'should merge lastSuccessfulMergeRef (forward direction)')
 		// When already merged, no commit or branch creation should happen
 		t.notOk(gitCalls.find(c => c === 'commit'), 'should not commit when already merged')
 	})
