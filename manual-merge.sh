@@ -130,7 +130,7 @@ log_info "Starting cleanup..."
 
 # Delete merge-forward branches
 log_info "Deleting merge-forward branches..."
-MERGE_FORWARD_BRANCHES=$(git branch -r | grep 'origin/merge-forward-' | sed 's|origin/||' | xargs)
+MERGE_FORWARD_BRANCHES=$(git branch -r | grep 'origin/merge-forward-' | sed 's|origin/||' | xargs || true)
 if [[ -n "$MERGE_FORWARD_BRANCHES" ]]; then
   for branch in $MERGE_FORWARD_BRANCHES; do
     log_info "  Deleting $branch"
@@ -142,7 +142,7 @@ fi
 
 # Delete merge-conflicts branches
 log_info "Deleting merge-conflicts branches..."
-MERGE_CONFLICTS_BRANCHES=$(git branch -r | grep 'origin/merge-conflicts-' | sed 's|origin/||' | xargs)
+MERGE_CONFLICTS_BRANCHES=$(git branch -r | grep 'origin/merge-conflicts-' | sed 's|origin/||' | xargs || true)
 if [[ -n "$MERGE_CONFLICTS_BRANCHES" ]]; then
   for branch in $MERGE_CONFLICTS_BRANCHES; do
     log_info "  Deleting $branch"
