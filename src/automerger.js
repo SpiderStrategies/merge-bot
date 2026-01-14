@@ -455,15 +455,15 @@ class AutoMerger {
 	}
 
 	/**
-	 * Creates a merge-conflicts branch name that encodes the source and target branches
-	 * Format: merge-conflicts-NNNNN-{sourceBranch}-to-{targetBranch}
-	 * Example: merge-conflicts-68586-release-5-8-0-to-main
+	 * Creates a merge-conflicts branch name that encodes the PR, source, and target branches
+	 * Format: merge-conflicts-{issueNumber}-pr-{prNumber}-{sourceBranch}-to-{targetBranch}
+	 * Example: merge-conflicts-68586-pr-123-release-5-8-0-to-main
 	 */
 	createMergeConflictsBranchName(issueNumber, sourceBranch, targetBranch) {
 		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
 		const normalizedSource = normalizeForBranchName(sourceBranch)
 		const normalizedTarget = normalizeForBranchName(targetBranch)
-		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-${normalizedSource}-to-${normalizedTarget}`
+		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-pr-${this.prNumber}-${normalizedSource}-to-${normalizedTarget}`
 	}
 
 	/**

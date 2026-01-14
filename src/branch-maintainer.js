@@ -97,42 +97,13 @@ class BranchMaintainer {
 
 	/**
 	 * Determines the original PR number for merge-forward cleanup.
-	 *
-	 * The PR number depends on what kind of PR this is:
-	 * 1. Resolution PR to merge-forward branch: parse from base branch name
-	 * 2. merge-conflicts PR: look up issue to find original PR
-	 * 3. Normal PR: use current PR number
+	 * Both merge-forward and merge-conflicts branches encode the PR number as `-pr-{number}-`.
+	 * Falls back to current PR number for normal PRs.
 	 */
-	async determineOriginalPRNumber() {
-		const baseRef = this.pullRequest.base.ref ?? ''
-		const headRef = this.pullRequest.head.ref ?? ''
-
-		// Case 1: PR merged to merge-forward branch - parse PR number from branch name
-		const mfMatch = /^merge-forward-pr-(\d+)-/.exec(baseRef)
-		if (mfMatch) {
-			return mfMatch[1]
-		}
-
-		// Case 2: merge-conflicts PR - look up issue to find original PR
-		const mcMatch = /^merge-conflicts-(\d+)/.exec(headRef)
-		if (mcMatch) {
-			try {
-				const body = await this.shell.exec(
-					`gh issue view ${mcMatch[1]} --json body -q .body`)
-				const prMatch = /pull request #(\d+)/.exec(body)
-				if (prMatch) {
-					this.core.info(`Found original PR #${prMatch[1]} from issue #${mcMatch[1]}`)
-					return prMatch[1]
-				}
-				this.core.info(`Could not find original PR in issue #${mcMatch[1]}`)
-			} catch (e) {
-				this.core.info(`Error looking up issue #${mcMatch[1]}: ${e.message}`)
-			}
-			return null
-		}
-
-		// Case 3: Normal PR - use current PR number
-		return this.pullRequest.number
+	determineOriginalPRNumber() {
+		const refs = `${this.pullRequest.base.ref ?? ''} ${this.pullRequest.head.ref ?? ''}`
+		const match = /-pr-(\d+)-/.exec(refs)
+		return match ? match[1] : this.pullRequest.number
 	}
 
 	/**
@@ -140,7 +111,7 @@ class BranchMaintainer {
 	 * Uses determineOriginalPRNumber() to handle resolution PRs correctly.
 	 */
 	async cleanupMergeForwardBranches() {
-		const prNumber = await this.determineOriginalPRNumber()
+		const prNumber = this.determineOriginalPRNumber()
 		if (prNumber) {
 			await this.cleanupMergeForwardBranchesForPR(prNumber)
 		}

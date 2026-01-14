@@ -891,27 +891,15 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 
 	const BranchMaintainer = require('../src/branch-maintainer')
 
-	// Wrap shell to intercept gh issue view command and return mock issue body
-	const originalExec = shell.exec.bind(shell)
-	shell.exec = async (cmd) => {
-		if (cmd.includes('gh issue view 69569')) {
-			// Return mock issue body containing the original PR number
-			return `## Automatic Merge Failed
-@developer changes from pull request #69561 couldn't be merged forward automatically.
-Please submit a new pull request against the \`merge-forward-pr-69561-main\` branch.`
-		}
-		return originalExec(cmd)
-	}
-
 	// Simulate what happens when PR #69582 was merged:
-	// - Head branch: merge-conflicts-69569-release-5-8-0-to-main-2
+	// - Head branch: merge-conflicts-69569-pr-69561-release-5-8-0-to-main
 	// - Base branch: main (NOT merge-forward-pr-69561-main!)
 	// - This is the incorrect merge that bypassed the merge-forward branch
 	const maintainer = new BranchMaintainer({
 		pullRequest: {
 			merged: true,
 			number: 69582,
-			head: { ref: 'merge-conflicts-69569-release-5-8-0-to-main-2' },
+			head: { ref: 'merge-conflicts-69569-pr-69561-release-5-8-0-to-main' },
 			base: { ref: 'main' }
 		},
 		config: {
