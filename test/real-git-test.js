@@ -841,6 +841,12 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	git('commit -m "PR merge to release-5.8.0"')
 	git('push origin merge-forward-pr-69561-release-5-8-0')
 
+	// Also update release-5.8.0 to have the PR content
+	// (In real scenario, this happens via updateReleaseBranches when chain completes)
+	git('checkout release-5.8.0')
+	git('merge --ff-only merge-forward-pr-69561-release-5-8-0')
+	git('push origin release-5.8.0')
+
 	// merge-forward for main was also created (before conflict was detected)
 	git('checkout main')
 	git('checkout -b merge-forward-pr-69561-main')
@@ -861,6 +867,12 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 		'merge-forward for release-5.8.0 should exist before maintenance')
 	t.ok(branchesBefore.includes('merge-forward-pr-69561-main'),
 		'merge-forward for main should exist before maintenance')
+
+	// Verify branch-here is behind release-5.8.0 before maintenance
+	const releaseCommitBefore = git('rev-parse origin/release-5.8.0')
+	const branchHereCommitBefore = git('rev-parse origin/branch-here-release-5.8.0')
+	t.not(releaseCommitBefore, branchHereCommitBefore,
+		'branch-here-release-5.8.0 should be behind release-5.8.0 before maintenance')
 
 	// Use real Shell and Git
 	const { Shell } = require('gh-action-components')
@@ -931,4 +943,10 @@ Please submit a new pull request against the \`merge-forward-pr-69561-main\` bra
 		'merge-forward for release-5.8.0 should be cleaned up')
 	t.notOk(branchesAfter.includes('merge-forward-pr-69561-main'),
 		'merge-forward for main should be cleaned up')
+
+	// Verify branch-here was advanced to match release-5.8.0
+	const releaseCommitAfter = git('rev-parse origin/release-5.8.0')
+	const branchHereCommitAfter = git('rev-parse origin/branch-here-release-5.8.0')
+	t.equal(branchHereCommitAfter, releaseCommitAfter,
+		'branch-here-release-5.8.0 should be advanced to match release-5.8.0')
 })
