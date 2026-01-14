@@ -63,9 +63,12 @@ tap.test('cleanupMergeConflictsBranch detects simple merge-conflicts branches', 
 			head: {
 				ref: 'merge-conflicts-68875'
 			},
+			base: {
+				ref: 'merge-forward-pr-123-main' // Not terminal branch
+			},
 			body: 'Fixes #68875'
 		},
-		config: { branches: {}, mergeOperations: {} },
+		config: { branches: { main: {} }, mergeOperations: {} },
 		core,
 		shell: mockShell
 	})
@@ -73,7 +76,7 @@ tap.test('cleanupMergeConflictsBranch detects simple merge-conflicts branches', 
 	await maintainer.cleanupMergeConflictsBranch()
 
 	t.equal(deletedBranches.length, 1, 'should delete the merge-conflicts branch')
-	t.equal(deletedBranches[0], 'merge-conflicts-68875', 'should delete the correct branch')
+	t.equal(deletedBranches[0], 'merge-conflicts-68875', 'should delete the full branch name')
 })
 
 tap.test('cleanupMergeConflictsBranch detects encoded merge-conflicts branches', async t => {
@@ -86,9 +89,12 @@ tap.test('cleanupMergeConflictsBranch detects encoded merge-conflicts branches',
 			head: {
 				ref: 'merge-conflicts-68895-release-5-7-2-to-release-5-8-0'
 			},
+			base: {
+				ref: 'merge-forward-pr-456-release-5-8-0' // Not terminal branch
+			},
 			body: 'Fixes #68895'
 		},
-		config: { branches: {}, mergeOperations: {} },
+		config: { branches: { main: {} }, mergeOperations: {} },
 		core,
 		shell: mockShell
 	})
@@ -96,7 +102,9 @@ tap.test('cleanupMergeConflictsBranch detects encoded merge-conflicts branches',
 	await maintainer.cleanupMergeConflictsBranch()
 
 	t.equal(deletedBranches.length, 1, 'should delete the merge-conflicts branch')
-	t.equal(deletedBranches[0], 'merge-conflicts-68895', 'should delete the correct branch')
+	// Now deletes full branch name, not just prefix+issue
+	t.equal(deletedBranches[0], 'merge-conflicts-68895-release-5-7-2-to-release-5-8-0',
+		'should delete the full branch name')
 })
 
 tap.test('cleanupMergeConflictsBranch ignores non-merge-conflict branches', async t => {
@@ -108,9 +116,12 @@ tap.test('cleanupMergeConflictsBranch ignores non-merge-conflict branches', asyn
 			head: {
 				ref: 'feature-my-awesome-feature'
 			},
+			base: {
+				ref: 'main'
+			},
 			body: 'Fixes #12345'
 		},
-		config: { branches: {}, mergeOperations: {} },
+		config: { branches: { main: {} }, mergeOperations: {} },
 		core,
 		shell: mockShell
 	})
