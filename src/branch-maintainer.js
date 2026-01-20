@@ -53,8 +53,12 @@ class BranchMaintainer {
 		const automergeSucceeded = !automergeConflictBranch
 		const commitsReachedMain = !isTerminalBranch && automergeSucceeded
 
-		if (commitsReachedMain) {
-			this.core.info(`Running branch maintenance: commits reached main (isTerminalBranch=${isTerminalBranch}, automergeSucceeded=${automergeSucceeded})`)
+		// Also clean up if a merge-conflicts PR completed the chain by merging to terminal
+		const mergeConflictsPRCompleted = this.isMergeConflictsPR() && isTerminalBranch
+		const shouldCleanup = commitsReachedMain || mergeConflictsPRCompleted
+
+		if (shouldCleanup) {
+			this.core.info(`Running branch maintenance: commits reached main`)
 			await this.maintainBranches()
 			await this.cleanupMergeForwardBranches()
 		} else if (isTerminalBranch) {
@@ -75,32 +79,59 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Cleans up the merge-conflicts branch associated with a closed PR, if applicable.
-	 * Only acts on PRs that came from merge-conflicts branches. The issue number
-	 * is extracted directly from the branch name (e.g., merge-conflicts-12345).
+	 * Cleans up the merge-conflicts branch if this PR came from one.
 	 */
 	async cleanupMergeConflictsBranch() {
-		const match = /^merge-conflicts-(\d+)/
-			.exec(this.pullRequest.head.ref ?? '')
-		if (match) {
-			const issue = match[1]
-			await this.shell.execQuietly(
-				`git push origin --delete ${MB_BRANCH_FAILED_PREFIX}${issue}`)
+		const headRef = this.pullRequest.head.ref ?? ''
+		if (headRef.startsWith(MB_BRANCH_FAILED_PREFIX)) {
+			await this.shell.execQuietly(`git push origin --delete ${headRef}`)
 		}
 	}
 
 	/**
-	 * Cleans up all merge-forward branches for a given PR number.
-	 * This should be called after a PR's merge chain successfully reaches main.
-	 * Deletes all branches matching the pattern: merge-forward-pr-{prNumber}-*
+	 * Determines whether this PR's head branch is a merge-conflicts branch.
+	 */
+	isMergeConflictsPR() {
+		return (this.pullRequest.head.ref ?? '').startsWith(MB_BRANCH_FAILED_PREFIX)
+	}
+
+	/**
+	 * Determines the original PR number for merge-forward cleanup.
+	 * Extracts from merge-conflicts branch name, or falls back to current PR number.
+	 */
+	determineOriginalPRNumber() {
+		const headRef = this.pullRequest.head?.ref ?? ''
+
+		if (headRef.startsWith(MB_BRANCH_FAILED_PREFIX)) {
+			const match = /-pr-(\d+)-/.exec(headRef)
+			if (match) return match[1]
+		}
+
+		return this.pullRequest.number
+	}
+
+	/**
+	 * Cleans up all merge-forward branches for this PR's merge chain.
+	 * Uses determineOriginalPRNumber() to handle resolution PRs correctly.
 	 */
 	async cleanupMergeForwardBranches() {
-		const prNumber = this.pullRequest.number
+		const prNumber = this.determineOriginalPRNumber()
+		if (prNumber) {
+			await this.cleanupMergeForwardBranchesForPR(prNumber)
+		}
+	}
+
+	/**
+	 * Deletes all merge-forward branches for a given PR number.
+	 * Deletes all branches matching the pattern: merge-forward-pr-{prNumber}-*
+	 *
+	 * @param {string|number} prNumber - The PR number whose merge-forward branches to delete
+	 */
+	async cleanupMergeForwardBranchesForPR(prNumber) {
 		const pattern = `${MB_BRANCH_FORWARD_PREFIX}${prNumber}-`
 
-		// Find all merge-forward branches for this PR
 		const branches = await this.shell.exec(
-			`git ls-remote --heads origin ${pattern}*`)
+			`git ls-remote --heads origin '${pattern}*'`)
 
 		if (!branches) {
 			return
@@ -114,8 +145,8 @@ class BranchMaintainer {
 			.map(line => line.split('refs/heads/')[1])
 			.filter(name => name)
 
-		// Delete each branch
 		for (const branchName of branchNames) {
+			this.core.info(`Deleting merge-forward branch: ${branchName}`)
 			await this.shell.execQuietly(
 				`git push origin --delete ${branchName}`)
 		}

@@ -791,3 +791,150 @@ tap.test('Resume chain: continues merge chain after conflict resolution', async 
 	t.equal(action.lastSuccessfulBranch, 'main',
 		'after resolution, lastSuccessfulBranch should be at terminal')
 })
+
+tap.test('Conflict resolution PR merged to main cleans up merge-forward branches', async t => {
+	// This test verifies that when a conflict resolution PR is merged directly
+	// to `main` (instead of to merge-forward-pr-*-main), the merge-forward
+	// branches are still cleaned up.
+	//
+	// The merge-conflicts branch name contains the issue number, and we can
+	// use that to find and clean up the associated merge-forward branches.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	// Create release-5.7.0 (where the original PR was merged)
+	git('checkout -b release-5.7.0')
+	git('push -u origin release-5.7.0')
+	git('checkout -b branch-here-release-5.7.0')
+	git('push -u origin branch-here-release-5.7.0')
+	git('checkout release-5.7.0')
+
+	// Create release-5.8.0 (intermediate step in chain)
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+	git('checkout release-5.8.0')
+
+	// Create main with different content (causes conflict)
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'test.txt'), 'MAIN VERSION\n')
+	git('add test.txt')
+	git('commit -m "Main version"')
+	git('push origin main')
+
+	// Simulate PR #69561's merge-forward branches that were created during
+	// the original action run (before conflict at main was detected)
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-69561-release-5-8-0')
+	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
+	git('add test.txt')
+	git('commit -m "PR merge to release-5.8.0"')
+	git('push origin merge-forward-pr-69561-release-5-8-0')
+
+	// Also update release-5.8.0 to have the PR content
+	// (In real scenario, this happens via updateReleaseBranches when chain completes)
+	git('checkout release-5.8.0')
+	git('merge --ff-only merge-forward-pr-69561-release-5-8-0')
+	git('push origin release-5.8.0')
+
+	// merge-forward for main was also created (before conflict was detected)
+	git('checkout main')
+	git('checkout -b merge-forward-pr-69561-main')
+	git('push origin merge-forward-pr-69561-main')
+
+	// Simulate: Developer resolved the conflict and merged DIRECTLY to main
+	// (This is the bug trigger - they should have merged to merge-forward-pr-69561-main)
+	git('checkout main')
+	await writeFile(join(repoDir, 'test.txt'), 'RESOLVED CONTENT\n')
+	git('add test.txt')
+	git('commit -m "Merge merge-forward-pr-69561-release-5-8-0 Fixes #69569"')
+	const resolvedCommit = git('rev-parse HEAD')
+	git('push origin main')
+
+	// Verify merge-forward branches exist before running maintainer
+	const branchesBefore = git('ls-remote --heads origin')
+	t.ok(branchesBefore.includes('merge-forward-pr-69561-release-5-8-0'),
+		'merge-forward for release-5.8.0 should exist before maintenance')
+	t.ok(branchesBefore.includes('merge-forward-pr-69561-main'),
+		'merge-forward for main should exist before maintenance')
+
+	// Verify branch-here is behind release-5.8.0 before maintenance
+	const releaseCommitBefore = git('rev-parse origin/release-5.8.0')
+	const branchHereCommitBefore = git('rev-parse origin/branch-here-release-5.8.0')
+	t.not(releaseCommitBefore, branchHereCommitBefore,
+		'branch-here-release-5.8.0 should be behind release-5.8.0 before maintenance')
+
+	// Use real Shell and Git
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors (like deleting non-existent branches)
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// Simulate what happens when PR #69582 was merged:
+	// - Head branch: merge-conflicts-69569-pr-69561-release-5-8-0-to-main
+	// - Base branch: main (NOT merge-forward-pr-69561-main!)
+	// - This is the incorrect merge that bypassed the merge-forward branch
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 69582,
+			head: { ref: 'merge-conflicts-69569-pr-69561-release-5-8-0-to-main' },
+			base: { ref: 'main' }
+		},
+		config: {
+			branches: {
+				'release-5.7.0': {},
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.7.0': 'release-5.8.0',
+				'release-5.8.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	// Run maintenance (this is what the action does after PR merge)
+	// automergeConflictBranch is undefined because the PR wasn't processed
+	// through automerge - it was just a normal PR merge to main
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	const branchesAfter = git('ls-remote --heads origin')
+
+	// When a merge-conflicts PR is merged, we should clean up the associated
+	// merge-forward branches. The issue number in the branch name (69569) links
+	// to the original PR (69561) that created the merge-forward branches.
+	t.notOk(branchesAfter.includes('merge-forward-pr-69561-release-5-8-0'),
+		'merge-forward for release-5.8.0 should be cleaned up')
+	t.notOk(branchesAfter.includes('merge-forward-pr-69561-main'),
+		'merge-forward for main should be cleaned up')
+
+	// Verify branch-here was advanced to match release-5.8.0
+	const releaseCommitAfter = git('rev-parse origin/release-5.8.0')
+	const branchHereCommitAfter = git('rev-parse origin/branch-here-release-5.8.0')
+	t.equal(branchHereCommitAfter, releaseCommitAfter,
+		'branch-here-release-5.8.0 should be advanced to match release-5.8.0')
+})

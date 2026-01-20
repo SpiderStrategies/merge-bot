@@ -80,22 +80,23 @@ tap.test(`error status`, async t => {
 	t.equal(coreMock.failedArg, 'Test error')
 })
 
-tap.test('createMergeConflictsBranchName encodes source and target branches', async t => {
-	let action = new TestAutoMerger({})
-
+tap.test('createMergeConflictsBranchName encodes issue, PR, source and target', async t => {
 	t.test('handles standard branch names', async t => {
+		const action = new TestAutoMerger({ prNumber: 123 })
 		const actual = action.createMergeConflictsBranchName('68586', 'release-5.8.0', 'main')
-		t.equal('merge-conflicts-68586-release-5-8-0-to-main', actual)
+		t.equal('merge-conflicts-68586-pr-123-release-5-8-0-to-main', actual)
 	})
 
 	t.test('handles branch names without dots', async t => {
+		const action = new TestAutoMerger({ prNumber: 456 })
 		const actual = action.createMergeConflictsBranchName('12345', 'develop', 'main')
-		t.equal('merge-conflicts-12345-develop-to-main', actual)
+		t.equal('merge-conflicts-12345-pr-456-develop-to-main', actual)
 	})
 
 	t.test('handles multiple dots in version numbers', async t => {
+		const action = new TestAutoMerger({ prNumber: 789 })
 		const actual = action.createMergeConflictsBranchName('68590', 'release-5.7.2', 'release-5.8.0')
-		t.equal('merge-conflicts-68590-release-5-7-2-to-release-5-8-0', actual)
+		t.equal('merge-conflicts-68590-pr-789-release-5-7-2-to-release-5-8-0', actual)
 	})
 })
 
@@ -541,7 +542,7 @@ tap.test('handleConflicts', async t => {
 		t.ok(gitCommands.find(c => c.includes('reset')), 'should reset branch')
 
 		// merge-conflicts should be based on the TARGET (main) so forward merging works
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-release-5-8-0-to-main:main')),
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-pr-999-release-5-8-0-to-main:main')),
 			'should create merge-conflicts based on TARGET (main) for forward merging')
 
 		// Previous merge-forward is NOT created here - it was created by merge() at start
@@ -1143,7 +1144,7 @@ tap.test('Scenario Beta: Two PRs with conflicts at same point are isolated', asy
 		t.not(branchA, branchB, 'Different PRs get different merge-forward branches for same target')
 	})
 
-	t.test('merge-conflicts branches encode issue number for isolation', async t => {
+	t.test('merge-conflicts branches encode issue and PR number for isolation', async t => {
 		const actionA = new TestAutoMerger({ prNumber: 111 })
 		const actionB = new TestAutoMerger({ prNumber: 222 })
 
@@ -1151,10 +1152,10 @@ tap.test('Scenario Beta: Two PRs with conflicts at same point are isolated', asy
 		const conflictBranchA = actionA.createMergeConflictsBranchName(68001, 'release-5.7.0', 'main')
 		const conflictBranchB = actionB.createMergeConflictsBranchName(68002, 'release-5.7.0', 'main')
 
-		t.equal(conflictBranchA, 'merge-conflicts-68001-release-5-7-0-to-main',
-			'User A gets conflict branch with their issue number')
-		t.equal(conflictBranchB, 'merge-conflicts-68002-release-5-7-0-to-main',
-			'User B gets conflict branch with their issue number')
+		t.equal(conflictBranchA, 'merge-conflicts-68001-pr-111-release-5-7-0-to-main',
+			'User A gets conflict branch with their issue and PR number')
+		t.equal(conflictBranchB, 'merge-conflicts-68002-pr-222-release-5-7-0-to-main',
+			'User B gets conflict branch with their issue and PR number')
 		t.not(conflictBranchA, conflictBranchB,
 			'Different issues get different conflict branches even for same merge path')
 	})
