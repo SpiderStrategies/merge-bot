@@ -97,13 +97,17 @@ class BranchMaintainer {
 
 	/**
 	 * Determines the original PR number for merge-forward cleanup.
-	 * Both merge-forward and merge-conflicts branches encode the PR number as `-pr-{number}-`.
-	 * Falls back to current PR number for normal PRs.
+	 * Extracts from merge-conflicts branch name, or falls back to current PR number.
 	 */
 	determineOriginalPRNumber() {
-		const refs = `${this.pullRequest.base.ref ?? ''} ${this.pullRequest.head.ref ?? ''}`
-		const match = /-pr-(\d+)-/.exec(refs)
-		return match ? match[1] : this.pullRequest.number
+		const headRef = this.pullRequest.head?.ref ?? ''
+
+		if (headRef.startsWith(MB_BRANCH_FAILED_PREFIX)) {
+			const match = /-pr-(\d+)-/.exec(headRef)
+			if (match) return match[1]
+		}
+
+		return this.pullRequest.number
 	}
 
 	/**
@@ -127,7 +131,7 @@ class BranchMaintainer {
 		const pattern = `${MB_BRANCH_FORWARD_PREFIX}${prNumber}-`
 
 		const branches = await this.shell.exec(
-			`git ls-remote --heads origin ${pattern}*`)
+			`git ls-remote --heads origin '${pattern}*'`)
 
 		if (!branches) {
 			return
