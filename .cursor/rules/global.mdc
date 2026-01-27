@@ -219,6 +219,13 @@ The action is used in Spider Impact's workflow:
 
 It triggers on PR close and automatically handles both merge-forward and branch-here maintenance.
 
+**Note on Git Hooks**: Spider Impact has pre-push hooks that run linters (semgrep,
+ESLint, SCSS checks). These hooks do NOT affect the merge bot because the action
+runs on GitHub's runners where hooks aren't installed. However, if you use
+`manual-merge.sh` for recovery, it runs locally where your hooks ARE active—any
+linter violations will block the push, which is expected behavior for manual
+operations.
+
 ## Making Changes
 
 1. Make changes to the code in `src/`

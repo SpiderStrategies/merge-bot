@@ -181,7 +181,7 @@ tap.test('Phase 1a: Successful chain with branch cleanup', async t => {
 	const AutoMerger = require('../src/automerger')
 	class TestAutoMerger extends AutoMerger {
 		// Skip actual release branch updates for test
-		async updateReleaseBranches() {}
+		async updateTargetBranches() {}
 	}
 
 	const action = new TestAutoMerger({
@@ -740,7 +740,7 @@ tap.test('Resume chain: continues merge chain after conflict resolution', async 
 	const AutoMerger = require('../src/automerger')
 	class TestAutoMerger extends AutoMerger {
 		// Track branch updates
-		async updateReleaseBranches(branches) {
+		async updateTargetBranches(branches) {
 			updatedBranches.push(...branches)
 		}
 	}
@@ -790,6 +790,137 @@ tap.test('Resume chain: continues merge chain after conflict resolution', async 
 	// In real usage, executeMerges would update release branches
 	t.equal(action.lastSuccessfulBranch, 'main',
 		'after resolution, lastSuccessfulBranch should be at terminal')
+})
+
+tap.test('Terminal branch (main) is updated when merge-forward chain completes', async t => {
+	// This tests the bug where main is never updated after a conflict resolution
+	// PR merges to merge-forward-pr-{N}-main.
+	//
+	// Scenario:
+	// 1. PR merges to release-5.8.0
+	// 2. Bot creates merge-forward-pr-123-main, conflict at main
+	// 3. Developer resolves conflict, PRs to merge-forward-pr-123-main
+	// 4. PR merges, merge-forward-pr-123-main now has resolved content
+	// 5. Bot runs updateTargetBranches()
+	// 6. BUG: main is skipped because it's the terminal branch
+	// 7. EXPECTED: main should be fast-forwarded to match merge-forward-pr-123-main
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	// Create release-5.8.0
+	git('checkout -b release-5.8.0')
+	git('push origin release-5.8.0')
+	git('branch branch-here-release-5.8.0')
+	git('push origin branch-here-release-5.8.0')
+
+	// Create main
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'test.txt'), 'MAIN VERSION\n')
+	git('add test.txt')
+	git('commit -m "Main version"')
+	git('push origin main')
+	const mainCommitBefore = git('rev-parse origin/main')
+
+	// Simulate: merge-forward-pr-123-main exists with RESOLVED content
+	// (This is what happens after a developer resolves conflicts and their
+	// PR merges to the merge-forward branch)
+	git('checkout main')
+	git('checkout -b merge-forward-pr-123-main')
+	await writeFile(join(repoDir, 'test.txt'), 'RESOLVED CONTENT\n')
+	git('add test.txt')
+	git('commit -m "Resolved conflict from PR 123"')
+	const resolvedCommit = git('rev-parse HEAD')
+	git('push origin merge-forward-pr-123-main')
+
+	// Also create merge-forward for release-5.8.0 (from successful first step)
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-123-release-5-8-0')
+	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
+	git('add test.txt')
+	git('commit -m "PR merge to release-5.8.0"')
+	git('push origin merge-forward-pr-123-release-5-8-0')
+
+	// Use real Shell and Git
+	const { Shell, Git } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.startsWith('gh ')) return ''
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	const gitHelper = new Git(shell)
+
+	const AutoMerger = require('../src/automerger')
+
+	// Simulate the scenario: conflict resolution PR just merged to
+	// merge-forward-pr-123-main, now bot runs updateTargetBranches()
+	const action = new AutoMerger({
+		pullRequest: {
+			merged: true,
+			head: { sha: resolvedCommit },
+			merge_commit_sha: resolvedCommit
+		},
+		repository: { owner: 'test', name: 'repo' },
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeTargets: ['release-5.8.0', 'main']
+		},
+		prNumber: 123, // Original PR number (matches merge-forward branch name)
+		prAuthor: 'developer',
+		prTitle: 'Resolve conflicts',
+		prBranch: 'merge-conflicts-999-release-5-8-0-to-main',
+		baseBranch: 'merge-forward-pr-123-main',
+		prCommitSha: resolvedCommit,
+		core,
+		shell,
+		gh: {
+			github: {
+				context: {
+					serverUrl: 'https://github.com',
+					runId: 2,
+					repo: { owner: 'test', repo: 'repo' }
+				}
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: { author: { name: 'Dev', email: 'dev@test.com' } }
+					}]
+				}
+			}
+		},
+		git: gitHelper
+	})
+
+	action.terminalBranch = 'main'
+
+	// Call updateTargetBranches - this is what runs after executeMerges
+	// when the chain completes
+	await action.updateTargetBranches([])
+
+	// Fetch to get updated refs
+	git('fetch origin')
+
+	// Verify main was updated to match merge-forward-pr-123-main
+	const mainCommitAfter = git('rev-parse origin/main')
+	const mergeForwardCommit = git('rev-parse origin/merge-forward-pr-123-main')
+
+	t.not(mainCommitAfter, mainCommitBefore,
+		'main should have been updated (commit changed)')
+	t.equal(mainCommitAfter, mergeForwardCommit,
+		'main should match merge-forward-pr-123-main after updateTargetBranches')
 })
 
 tap.test('Conflict resolution PR merged to main cleans up merge-forward branches', async t => {
@@ -842,7 +973,7 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	git('push origin merge-forward-pr-69561-release-5-8-0')
 
 	// Also update release-5.8.0 to have the PR content
-	// (In real scenario, this happens via updateReleaseBranches when chain completes)
+	// (In real scenario, this happens via updateTargetBranches when chain completes)
 	git('checkout release-5.8.0')
 	git('merge --ff-only merge-forward-pr-69561-release-5-8-0')
 	git('push origin release-5.8.0')

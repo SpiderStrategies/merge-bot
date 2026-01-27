@@ -156,7 +156,7 @@ tap.test('executeMerges', async t => {
 			async merge({branch}) {
 				return true
 			}
-			async updateReleaseBranches(branches) {
+			async updateTargetBranches(branches) {
 				// Skip for this basic test
 			}
 		}
