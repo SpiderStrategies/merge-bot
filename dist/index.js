@@ -36580,7 +36580,7 @@ class AutoMerger {
 
 		if (allMergesPassed) {
 			this.core.info('All merges are complete')
-			await this.updateReleaseBranches(mergedBranches)
+			await this.updateTargetBranches(mergedBranches)
 			await this.git.deleteBranch(this.prBranch)
 		} else if (this.conflictBranch) {
 			this.generateMergeConflictNotice()
@@ -36589,16 +36589,17 @@ class AutoMerger {
 	}
 
 	/**
-	 * Updates release branches to match their merge-forward commits after a
-	 * successful merge chain completion.
+	 * Updates target branches (release branches and main) to match their
+	 * merge-forward commits after a successful merge chain completion.
 	 *
-	 * This method finds ALL merge-forward branches for this PR (not just the ones
-	 * merged in this invocation) to handle the case where the chain was interrupted
-	 * by conflicts and resumed in a subsequent action invocation.
+	 * This method finds ALL merge-forward branches for this PR (not just the
+	 * ones merged in this invocation) to handle the case where the chain was
+	 * interrupted by conflicts and resumed in a subsequent action invocation.
 	 *
-	 * @param {string[]} mergedBranches - Branches merged in this invocation (unused, kept for compatibility)
+	 * @param {string[]} mergedBranches - Branches merged in this invocation
+	 *   (unused, kept for compatibility)
 	 */
-	async updateReleaseBranches(mergedBranches) {
+	async updateTargetBranches(mergedBranches) {
 		const prNumber = this.isMergeForwardPR() ? this.getOriginalPRNumber() : this.prNumber
 		const branchNames = await this.findMergeForwardBranches(prNumber)
 
@@ -36613,12 +36614,7 @@ class AutoMerger {
 			const normalizedTarget = mergeForwardBranch.replace(/^merge-forward-pr-\d+-/, '')
 			const targetBranch = this.denormalizeBranchName(normalizedTarget)
 
-			if (targetBranch === this.terminalBranch) {
-				this.core.info(`Skipping terminal branch: ${targetBranch}`)
-				continue
-			}
-
-			await this.updateSingleReleaseBranch(mergeForwardBranch, targetBranch)
+			await this.updateTargetBranch(mergeForwardBranch, targetBranch)
 		}
 	}
 
@@ -36651,13 +36647,15 @@ class AutoMerger {
 	}
 
 	/**
-	 * Updates a single release branch to match its merge-forward commit.
+	 * Updates a single target branch to match its merge-forward commit.
 	 * Attempts fast-forward first, falls back to merge commit if needed.
 	 *
-	 * @param {string} mergeForwardBranch - The merge-forward branch name (e.g., 'merge-forward-pr-123-release-5-8-0')
-	 * @param {string} targetBranch - The actual release branch to update (e.g., 'release-5.8.0')
+	 * @param {string} mergeForwardBranch - The merge-forward branch name
+	 *   (e.g., 'merge-forward-pr-123-release-5-8-0' or 'merge-forward-pr-123-main')
+	 * @param {string} targetBranch - The target branch to update
+	 *   (e.g., 'release-5.8.0' or 'main')
 	 */
-	async updateSingleReleaseBranch(mergeForwardBranch, targetBranch) {
+	async updateTargetBranch(mergeForwardBranch, targetBranch) {
 		this.core.info(`Fast-forwarding ${targetBranch} to ${mergeForwardBranch}`)
 		await this.git.checkout(targetBranch)
 
