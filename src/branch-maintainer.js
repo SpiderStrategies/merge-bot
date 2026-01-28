@@ -1,4 +1,5 @@
 const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX } = require('./constants')
+const { extractPRFromMergeConflicts, extractTargetFromMergeForward } = require('./branch-name-utils')
 
 /**
  * Maintains branch-here pointers by updating them to the latest commit that
@@ -101,13 +102,8 @@ class BranchMaintainer {
 	 */
 	determineOriginalPRNumber() {
 		const headRef = this.pullRequest.head?.ref ?? ''
-
-		if (headRef.startsWith(MB_BRANCH_FAILED_PREFIX)) {
-			const match = /-pr-(\d+)-/.exec(headRef)
-			if (match) return match[1]
-		}
-
-		return this.pullRequest.number
+		const prNumber = extractPRFromMergeConflicts(headRef)
+		return prNumber ?? this.pullRequest.number
 	}
 
 	/**
@@ -162,14 +158,10 @@ class BranchMaintainer {
 	 * This enables incremental advancement as each PR's chain completes (issue #11).
 	 *
 	 * @param {string} mergeForwardBranch - The merge-forward branch name
-	 *   (e.g., 'merge-forward-pr-123-release-5-8-0')
+	 *   (e.g., 'merge-forward-pr-123-release-5.8.0')
 	 */
 	async advanceBranchHereFromMergeForward(mergeForwardBranch) {
-		// Extract target branch from merge-forward name
-		// Format: merge-forward-pr-{prNumber}-{normalizedTarget}
-		const normalizedTarget = mergeForwardBranch.replace(
-			/^merge-forward-pr-\d+-/, '')
-		const targetBranch = this.denormalizeBranchName(normalizedTarget)
+		const targetBranch = extractTargetFromMergeForward(mergeForwardBranch)
 
 		// Skip terminal branch (no branch-here for main)
 		if (targetBranch === this.terminalBranch) {
@@ -192,24 +184,6 @@ class BranchMaintainer {
 			this.core.info(
 				`Could not advance ${branchHere}: ${e.message}`)
 		}
-	}
-
-	/**
-	 * Converts a normalized branch name back to the actual branch name.
-	 * E.g., "release-5-8-0" -> "release-5.8.0"
-	 *
-	 * @param {string} normalized - Normalized branch name
-	 * @returns {string} Actual branch name
-	 */
-	denormalizeBranchName(normalized) {
-		const branches = Object.keys(this.config.branches)
-		for (const branch of branches) {
-			if (branch.replace(/\./g, '-') === normalized) {
-				return branch
-			}
-		}
-		// Fallback: return as-is (e.g., for 'main')
-		return normalized
 	}
 
 	/**
@@ -251,9 +225,8 @@ class BranchMaintainer {
 	async updateBranchHerePointer(branch) {
 		// Check if there are any blocked merge-conflicts branches FROM this branch
 		// Format: merge-conflicts-{issue}-pr-{pr}-{source}-to-{target}
-		const normalizedBranch = branch.replace(/\./g, '-')
 		const blockedBranches = await this.shell.exec(
-			`git ls-remote --heads origin 'merge-conflicts-*-${normalizedBranch}-to-*'`)
+			`git ls-remote --heads origin 'merge-conflicts-*-${branch}-to-*'`)
 
 		if (blockedBranches) {
 			this.core.info(

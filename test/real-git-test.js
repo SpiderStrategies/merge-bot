@@ -343,7 +343,7 @@ tap.test('Phase 1b: Multi-step chain (merges through release, then conflicts at 
 	t.equal(conflictBranch, 'main', 'conflict should be at main, not release-5.8.0')
 
 	// Verify merge-forward branch was created for successful step
-	t.ok(createdBranches.includes('merge-forward-pr-999-release-5-8-0'),
+	t.ok(createdBranches.includes('merge-forward-pr-999-release-5.8.0'),
 		'should create merge-forward branch for successful release-5.8.0 merge')
 
 	// Verify merge-forward branch was created for conflict step
@@ -711,11 +711,11 @@ tap.test('Resume chain: continues merge chain after conflict resolution', async 
 
 	// Also create merge-forward for release-5.8.0 (from successful first step)
 	git('checkout branch-here-release-5.8.0')
-	git('checkout -b merge-forward-pr-123-release-5-8-0')
+	git('checkout -b merge-forward-pr-123-release-5.8.0')
 	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
 	git('add test.txt')
 	git('commit -m "PR merge to release-5.8.0"')
-	git('push origin merge-forward-pr-123-release-5-8-0')
+	git('push origin merge-forward-pr-123-release-5.8.0')
 
 	// Use real Shell and Git
 	const { Shell, Git } = require('gh-action-components')
@@ -758,7 +758,7 @@ tap.test('Resume chain: continues merge chain after conflict resolution', async 
 		prNumber: 456, // This is the resolution PR number
 		prAuthor: 'developer',
 		prTitle: 'Resolve conflicts',
-		prBranch: 'merge-conflicts-999-release-5-8-0-to-main', // Source branch
+		prBranch: 'merge-conflicts-999-release-5.8.0-to-main', // Source branch
 		baseBranch: 'merge-forward-pr-123-main', // Target is merge-forward
 		prCommitSha: resolvedCommit,
 		core,
@@ -843,11 +843,11 @@ tap.test('Terminal branch (main) is updated when merge-forward chain completes',
 
 	// Also create merge-forward for release-5.8.0 (from successful first step)
 	git('checkout branch-here-release-5.8.0')
-	git('checkout -b merge-forward-pr-123-release-5-8-0')
+	git('checkout -b merge-forward-pr-123-release-5.8.0')
 	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
 	git('add test.txt')
 	git('commit -m "PR merge to release-5.8.0"')
-	git('push origin merge-forward-pr-123-release-5-8-0')
+	git('push origin merge-forward-pr-123-release-5.8.0')
 
 	// Use real Shell and Git
 	const { Shell, Git } = require('gh-action-components')
@@ -880,7 +880,7 @@ tap.test('Terminal branch (main) is updated when merge-forward chain completes',
 		prNumber: 123, // Original PR number (matches merge-forward branch name)
 		prAuthor: 'developer',
 		prTitle: 'Resolve conflicts',
-		prBranch: 'merge-conflicts-999-release-5-8-0-to-main',
+		prBranch: 'merge-conflicts-999-release-5.8.0-to-main',
 		baseBranch: 'merge-forward-pr-123-main',
 		prCommitSha: resolvedCommit,
 		core,
@@ -977,8 +977,8 @@ tap.test('branch-here should NOT advance past blocked commits when another PR su
 	// Simulate: Cole's merge-forward chain was created but BLOCKED at main
 	// (merge-conflicts branch exists, issue created, but not resolved yet)
 	git('checkout main')
-	git('checkout -b merge-conflicts-69824-pr-69448-release-5-8-0-to-main')
-	git('push origin merge-conflicts-69824-pr-69448-release-5-8-0-to-main')
+	git('checkout -b merge-conflicts-69824-pr-69448-release-5.8.0-to-main')
+	git('push origin merge-conflicts-69824-pr-69448-release-5.8.0-to-main')
 	git('checkout release-5.8.0')
 
 	// Another PR (successful one): modifies other.txt (no conflict)
@@ -1111,16 +1111,16 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	// Simulate PR #69561's merge-forward branches that were created during
 	// the original action run (before conflict at main was detected)
 	git('checkout branch-here-release-5.8.0')
-	git('checkout -b merge-forward-pr-69561-release-5-8-0')
+	git('checkout -b merge-forward-pr-69561-release-5.8.0')
 	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
 	git('add test.txt')
 	git('commit -m "PR merge to release-5.8.0"')
-	git('push origin merge-forward-pr-69561-release-5-8-0')
+	git('push origin merge-forward-pr-69561-release-5.8.0')
 
 	// Also update release-5.8.0 to have the PR content
 	// (In real scenario, this happens via updateTargetBranches when chain completes)
 	git('checkout release-5.8.0')
-	git('merge --ff-only merge-forward-pr-69561-release-5-8-0')
+	git('merge --ff-only merge-forward-pr-69561-release-5.8.0')
 	git('push origin release-5.8.0')
 
 	// merge-forward for main was also created (before conflict was detected)
@@ -1133,13 +1133,13 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	git('checkout main')
 	await writeFile(join(repoDir, 'test.txt'), 'RESOLVED CONTENT\n')
 	git('add test.txt')
-	git('commit -m "Merge merge-forward-pr-69561-release-5-8-0 Fixes #69569"')
+	git('commit -m "Merge merge-forward-pr-69561-release-5.8.0 Fixes #69569"')
 	const resolvedCommit = git('rev-parse HEAD')
 	git('push origin main')
 
 	// Verify merge-forward branches exist before running maintainer
 	const branchesBefore = git('ls-remote --heads origin')
-	t.ok(branchesBefore.includes('merge-forward-pr-69561-release-5-8-0'),
+	t.ok(branchesBefore.includes('merge-forward-pr-69561-release-5.8.0'),
 		'merge-forward for release-5.8.0 should exist before maintenance')
 	t.ok(branchesBefore.includes('merge-forward-pr-69561-main'),
 		'merge-forward for main should exist before maintenance')
@@ -1168,14 +1168,14 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	const BranchMaintainer = require('../src/branch-maintainer')
 
 	// Simulate what happens when PR #69582 was merged:
-	// - Head branch: merge-conflicts-69569-pr-69561-release-5-8-0-to-main
+	// - Head branch: merge-conflicts-69569-pr-69561-release-5.8.0-to-main
 	// - Base branch: main (NOT merge-forward-pr-69561-main!)
 	// - This is the incorrect merge that bypassed the merge-forward branch
 	const maintainer = new BranchMaintainer({
 		pullRequest: {
 			merged: true,
 			number: 69582,
-			head: { ref: 'merge-conflicts-69569-pr-69561-release-5-8-0-to-main' },
+			head: { ref: 'merge-conflicts-69569-pr-69561-release-5.8.0-to-main' },
 			base: { ref: 'main' }
 		},
 		config: {
@@ -1203,7 +1203,7 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	// When a merge-conflicts PR is merged, we should clean up the associated
 	// merge-forward branches. The issue number in the branch name (69569) links
 	// to the original PR (69561) that created the merge-forward branches.
-	t.notOk(branchesAfter.includes('merge-forward-pr-69561-release-5-8-0'),
+	t.notOk(branchesAfter.includes('merge-forward-pr-69561-release-5.8.0'),
 		'merge-forward for release-5.8.0 should be cleaned up')
 	t.notOk(branchesAfter.includes('merge-forward-pr-69561-main'),
 		'merge-forward for main should be cleaned up')
@@ -1256,12 +1256,12 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 
 	// PR1's merge-forward branch: adds file1.txt (will complete successfully)
 	git('checkout branch-here-release-5.8.0')
-	git('checkout -b merge-forward-pr-111-release-5-8-0')
+	git('checkout -b merge-forward-pr-111-release-5.8.0')
 	await writeFile(join(repoDir, 'file1.txt'), 'PR1 content\n')
 	git('add file1.txt')
 	git('commit -m "PR1 changes"')
 	const pr1MergeForwardCommit = git('rev-parse HEAD')
-	git('push -u origin merge-forward-pr-111-release-5-8-0')
+	git('push -u origin merge-forward-pr-111-release-5.8.0')
 
 	// PR1's merge-forward for main (also exists, will be cleaned up)
 	git('checkout main')
@@ -1273,16 +1273,16 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 
 	// PR2's merge-forward branch: adds file2.txt (will be blocked)
 	git('checkout branch-here-release-5.8.0')
-	git('checkout -b merge-forward-pr-222-release-5-8-0')
+	git('checkout -b merge-forward-pr-222-release-5.8.0')
 	await writeFile(join(repoDir, 'file2.txt'), 'PR2 content\n')
 	git('add file2.txt')
 	git('commit -m "PR2 changes"')
-	git('push -u origin merge-forward-pr-222-release-5-8-0')
+	git('push -u origin merge-forward-pr-222-release-5.8.0')
 
 	// PR2 is blocked: create merge-conflicts branch
 	git('checkout main')
-	git('checkout -b merge-conflicts-999-pr-222-release-5-8-0-to-main')
-	git('push -u origin merge-conflicts-999-pr-222-release-5-8-0-to-main')
+	git('checkout -b merge-conflicts-999-pr-222-release-5.8.0-to-main')
+	git('push -u origin merge-conflicts-999-pr-222-release-5.8.0-to-main')
 
 	// Verify setup
 	const branchHereBefore = git('rev-parse origin/branch-here-release-5.8.0')
@@ -1311,7 +1311,7 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 		pullRequest: {
 			merged: true,
 			number: 333,
-			head: { ref: 'merge-conflicts-888-pr-111-release-5-8-0-to-main' },
+			head: { ref: 'merge-conflicts-888-pr-111-release-5.8.0-to-main' },
 			base: { ref: 'main' }
 		},
 		config: {
@@ -1334,13 +1334,13 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 
 	// Verify PR1's merge-forward branches were cleaned up
 	const branchesAfter = git('ls-remote --heads origin')
-	t.notOk(branchesAfter.includes('merge-forward-pr-111-release-5-8-0'),
+	t.notOk(branchesAfter.includes('merge-forward-pr-111-release-5.8.0'),
 		'PR1 merge-forward for release-5.8.0 should be cleaned up')
 	t.notOk(branchesAfter.includes('merge-forward-pr-111-main'),
 		'PR1 merge-forward for main should be cleaned up')
 
 	// Verify PR2's merge-forward still exists (chain not complete)
-	t.ok(branchesAfter.includes('merge-forward-pr-222-release-5-8-0'),
+	t.ok(branchesAfter.includes('merge-forward-pr-222-release-5.8.0'),
 		'PR2 merge-forward should still exist (blocked)')
 
 	// KEY ASSERTION: branch-here should include PR1's changes
@@ -1356,4 +1356,107 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 	// Verify PR2's file is NOT in branch-here (PR2 is blocked)
 	t.notOk(pr1FileInBranchHere.includes('file2.txt'),
 		'branch-here should NOT include PR2\'s file (file2.txt) - PR2 is blocked')
+})
+
+tap.test('branch names with periods work without normalization (issue #14)', async t => {
+	// This test verifies that branch names containing periods (e.g., release-5.8.0)
+	// work correctly in merge-forward and merge-conflicts branch names without
+	// needing to normalize them to hyphens (e.g., release-5.8.0).
+	//
+	// The test creates branches with ACTUAL names (periods intact) and verifies
+	// they can be parsed correctly.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'test.txt'), 'Initial\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	// Create release-5.8.0 (with periods)
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+
+	// Create branch-here-release-5.8.0
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	// Create main
+	git('checkout -b main')
+	git('push -u origin main')
+
+	// Create merge-forward branch with ACTUAL name (periods, not normalized)
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-999-release-5.8.0')
+	await writeFile(join(repoDir, 'feature.txt'), 'Feature\n')
+	git('add feature.txt')
+	git('commit -m "Feature commit"')
+	git('push -u origin merge-forward-pr-999-release-5.8.0')
+
+	// Verify the branch name contains periods (not normalized to hyphens)
+	const branches = git('ls-remote --heads origin')
+	t.ok(branches.includes('merge-forward-pr-999-release-5.8.0'),
+		'merge-forward branch should use actual name with periods')
+	t.notOk(branches.includes('merge-forward-pr-999-release-5-8-0'),
+		'merge-forward branch should NOT be normalized to hyphens')
+
+	// Use real Shell
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// Test that BranchMaintainer can parse and advance branch-here
+	// from a merge-forward branch with periods in the name
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 888,
+			head: { ref: 'merge-conflicts-777-pr-999-release-5.8.0-to-main' },
+			base: { ref: 'main' }
+		},
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.8.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	// This should work without needing to denormalize the branch name
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	// Fetch updated refs
+	git('fetch origin')
+
+	// Verify branch-here was advanced
+	const branchHereAfter = git('rev-parse origin/branch-here-release-5.8.0')
+	const initialCommit = git('rev-parse HEAD~1')
+	t.not(branchHereAfter, initialCommit,
+		'branch-here should advance when merge-forward branch with periods is cleaned up')
+
+	// Verify merge-forward was deleted
+	const branchesAfter = git('ls-remote --heads origin')
+	t.notOk(branchesAfter.includes('merge-forward-pr-999-release-5.8.0'),
+		'merge-forward branch should be cleaned up')
 })

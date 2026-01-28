@@ -87,10 +87,10 @@ tap.test('cleanupMergeConflictsBranch detects encoded merge-conflicts branches',
 			number: 2,
 			title: 'Merge conflicts #68895',
 			head: {
-				ref: 'merge-conflicts-68895-release-5-7-2-to-release-5-8-0'
+				ref: 'merge-conflicts-68895-release-5.7.2-to-release-5.8.0'
 			},
 			base: {
-				ref: 'merge-forward-pr-456-release-5-8-0' // Not terminal branch
+				ref: 'merge-forward-pr-456-release-5.8.0' // Not terminal branch
 			},
 			body: 'Fixes #68895'
 		},
@@ -103,7 +103,7 @@ tap.test('cleanupMergeConflictsBranch detects encoded merge-conflicts branches',
 
 	t.equal(deletedBranches.length, 1, 'should delete the merge-conflicts branch')
 	// Now deletes full branch name, not just prefix+issue
-	t.equal(deletedBranches[0], 'merge-conflicts-68895-release-5-7-2-to-release-5-8-0',
+	t.equal(deletedBranches[0], 'merge-conflicts-68895-release-5.7.2-to-release-5.8.0',
 		'should delete the full branch name')
 })
 
@@ -139,8 +139,8 @@ tap.test('cleanupMergeForwardBranches', async t => {
 		const execBehavior = createGitShellBehavior({
 			mergeForwardBranches: {
 				'12345': [
-					{ branch: 'release-5-7', sha: 'sha1' },
-					{ branch: 'release-5-8', sha: 'sha2' },
+					{ branch: 'release-5.7', sha: 'sha1' },
+					{ branch: 'release-5.8', sha: 'sha2' },
 					{ branch: 'main', sha: 'sha3' }
 				]
 			}
@@ -170,8 +170,8 @@ tap.test('cleanupMergeForwardBranches', async t => {
 		await maintainer.cleanupMergeForwardBranches()
 
 		t.equal(deletedBranches.length, 3, 'should delete all three merge-forward branches')
-		t.ok(deletedBranches.includes('merge-forward-pr-12345-release-5-7'), 'should delete release-5-7 branch')
-		t.ok(deletedBranches.includes('merge-forward-pr-12345-release-5-8'), 'should delete release-5-8 branch')
+		t.ok(deletedBranches.includes('merge-forward-pr-12345-release-5.7'), 'should delete release-5.7 branch')
+		t.ok(deletedBranches.includes('merge-forward-pr-12345-release-5.8'), 'should delete release-5.8 branch')
 		t.ok(deletedBranches.includes('merge-forward-pr-12345-main'), 'should delete main branch')
 	})
 
@@ -217,7 +217,7 @@ tap.test('run calls cleanup when commits reach main', async t => {
 	const execBehavior = createGitShellBehavior({
 		mergeForwardBranches: {
 			'555': [
-				{ branch: 'release-5-7', sha: 'sha1' },
+				{ branch: 'release-5.7', sha: 'sha1' },
 				{ branch: 'main', sha: 'sha2' }
 			]
 		}
@@ -254,7 +254,7 @@ tap.test('run calls cleanup when commits reach main', async t => {
 	await maintainer.run({ automergeConflictBranch: null })
 
 	t.ok(deletedBranches.length > 0, 'should cleanup merge-forward branches when commits reach main')
-	t.ok(deletedBranches.includes('merge-forward-pr-555-release-5-7'), 'should delete merge-forward branches')
+	t.ok(deletedBranches.includes('merge-forward-pr-555-release-5.7'), 'should delete merge-forward branches')
 })
 
 tap.test('run does not cleanup when commits blocked', async t => {
@@ -264,7 +264,7 @@ tap.test('run does not cleanup when commits blocked', async t => {
 	const execBehavior = createGitShellBehavior({
 		mergeForwardBranches: {
 			'666': [
-				{ branch: 'release-5-7', sha: 'sha1' }
+				{ branch: 'release-5.7', sha: 'sha1' }
 			]
 		}
 	})

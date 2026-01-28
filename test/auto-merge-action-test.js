@@ -84,7 +84,7 @@ tap.test('createMergeConflictsBranchName encodes issue, PR, source and target', 
 	t.test('handles standard branch names', async t => {
 		const action = new TestAutoMerger({ prNumber: 123 })
 		const actual = action.createMergeConflictsBranchName('68586', 'release-5.8.0', 'main')
-		t.equal('merge-conflicts-68586-pr-123-release-5-8-0-to-main', actual)
+		t.equal('merge-conflicts-68586-pr-123-release-5.8.0-to-main', actual)
 	})
 
 	t.test('handles branch names without dots', async t => {
@@ -96,7 +96,7 @@ tap.test('createMergeConflictsBranchName encodes issue, PR, source and target', 
 	t.test('handles multiple dots in version numbers', async t => {
 		const action = new TestAutoMerger({ prNumber: 789 })
 		const actual = action.createMergeConflictsBranchName('68590', 'release-5.7.2', 'release-5.8.0')
-		t.equal('merge-conflicts-68590-pr-789-release-5-7-2-to-release-5-8-0', actual)
+		t.equal('merge-conflicts-68590-pr-789-release-5.7.2-to-release-5.8.0', actual)
 	})
 })
 
@@ -104,7 +104,7 @@ tap.test('createMergeForwardBranchName creates proper branch names', async t => 
 	t.test('handles standard branch names', async t => {
 		const action = new TestAutoMerger({ prNumber: 123 })
 		const actual = action.createMergeForwardBranchName('release-5.8.0')
-		t.equal('merge-forward-pr-123-release-5-8-0', actual)
+		t.equal('merge-forward-pr-123-release-5.8.0', actual)
 	})
 
 	t.test('handles branch names without dots', async t => {
@@ -116,7 +116,7 @@ tap.test('createMergeForwardBranchName creates proper branch names', async t => 
 	t.test('handles multiple dots in version numbers', async t => {
 		const action = new TestAutoMerger({ prNumber: 789 })
 		const actual = action.createMergeForwardBranchName('release-5.7.2')
-		t.equal('merge-forward-pr-789-release-5-7-2', actual)
+		t.equal('merge-forward-pr-789-release-5.7.2', actual)
 	})
 })
 
@@ -186,15 +186,15 @@ tap.test('executeMerges', async t => {
 		const shell = createMockShell(core, createGitShellBehavior({
 			mergeForwardBranches: {
 				'12345': [
-					{ branch: 'release-5-7-1', sha: 'abc123' },
-					{ branch: 'release-5-7-2', sha: 'def456' },
-					{ branch: 'release-5-8-0', sha: 'ghi789' }
+				{ branch: 'release-5.7.1', sha: 'abc123' },
+				{ branch: 'release-5.7.2', sha: 'def456' },
+				{ branch: 'release-5.8.0', sha: 'ghi789' }
 				]
 			},
 			revParse: {
-				'origin/merge-forward-pr-12345-release-5-7-1': 'commit-sha-5-7-1',
-				'origin/merge-forward-pr-12345-release-5-7-2': 'commit-sha-5-7-2',
-				'origin/merge-forward-pr-12345-release-5-8-0': 'commit-sha-5-8-0'
+				'origin/merge-forward-pr-12345-release-5.7.1': 'commit-sha-5-7-1',
+				'origin/merge-forward-pr-12345-release-5.7.2': 'commit-sha-5-7-2',
+				'origin/merge-forward-pr-12345-release-5.8.0': 'commit-sha-5-8-0'
 			}
 		}))
 
@@ -208,8 +208,8 @@ tap.test('executeMerges', async t => {
 
 		const action = new TestAction({
 			prNumber: 12345,
-			prBranch: 'merge-conflicts-67890-release-5-7-2-to-release-5-8-0',
-			baseBranch: 'merge-forward-pr-12345-release-5-8-0',
+			prBranch: 'merge-conflicts-67890-release-5.7.2-to-release-5.8.0',
+			baseBranch: 'merge-forward-pr-12345-release-5.8.0',
 			config: {
 				mergeTargets: ['release-5.7.1', 'release-5.7.2', 'release-5.8.0', 'main']
 			},
@@ -240,10 +240,10 @@ tap.test('executeMerges', async t => {
 
 		const shell = createMockShell(core, createGitShellBehavior({
 			mergeForwardBranches: {
-				'12345': [{ branch: 'release-5-8', sha: 'abc123' }]
+				'12345': [{ branch: 'release-5.8', sha: 'abc123' }]
 			},
 			revParse: {
-				'origin/merge-forward-pr-12345-release-5-8': 'commit-sha-release-5-8'
+				'origin/merge-forward-pr-12345-release-5.8': 'commit-sha-release-5.8'
 			}
 		}))
 
@@ -273,7 +273,7 @@ tap.test('executeMerges', async t => {
 		t.equal(result, true, 'should return true when all merges succeed')
 		t.ok(gitCalls.filter(c => c === 'checkout:release-5.8').length >= 2,
 			'should checkout release-5.8 for merging AND for updating')
-		t.ok(gitCalls.find(c => c.includes('merge:commit-sha-release-5-8:--ff-only')),
+		t.ok(gitCalls.find(c => c.includes('merge:commit-sha-release-5.8:--ff-only')),
 			'should fast-forward release-5.8 to its merge-forward commit')
 		t.ok(gitCalls.find(c => c.includes('push:origin release-5.8')),
 			'should push updated release-5.8')
@@ -385,29 +385,6 @@ tap.test('run', async t => {
 		t.equal(action.terminalBranch, 'main')
 	})
 
-	t.test('detects merge-forward PR and extracts original PR number', async t => {
-		const core = mockCore({})
-		const action = new TestAutoMerger({
-			pullRequest: {
-				merged: true,
-				base: { ref: 'merge-forward-pr-12345-release-5-8-0' }
-			},
-			baseBranch: 'merge-forward-pr-12345-release-5-8-0',
-			config: {
-				mergeTargets: ['release-5.7.0', 'release-5.8.0', 'main']
-			},
-			core
-		})
-
-		const isMergeForward = action.isMergeForwardPR()
-		const originalPR = action.getOriginalPRNumber()
-		const targetBranch = action.getMergeForwardTargetBranch()
-
-		t.equal(isMergeForward, true, 'should detect merge-forward PR')
-		t.equal(originalPR, '12345', 'should extract original PR number')
-		t.equal(targetBranch, 'release-5.8.0', 'should extract target branch')
-	})
-
 	t.test('detects non-merge-forward PR', async t => {
 		const core = mockCore({})
 		const action = new TestAutoMerger({
@@ -439,7 +416,7 @@ tap.test('run', async t => {
 		}
 
 		const action = new TestAction({
-			baseBranch: 'merge-forward-pr-12345-release-5-8-0',
+			baseBranch: 'merge-forward-pr-12345-release-5.8.0',
 			config: {
 				branches: {
 					'release-5.7.0': {},
@@ -542,11 +519,11 @@ tap.test('handleConflicts', async t => {
 		t.ok(gitCommands.find(c => c.includes('reset')), 'should reset branch')
 
 		// merge-conflicts should be based on the TARGET (main) so forward merging works
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-pr-999-release-5-8-0-to-main:main')),
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-pr-999-release-5.8.0-to-main:main')),
 			'should create merge-conflicts based on TARGET (main) for forward merging')
 
 		// Previous merge-forward is NOT created here - it was created by merge() at start
-		t.notOk(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5-8-0')),
+		t.notOk(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5.8.0')),
 			'should NOT create previous merge-forward (merge() creates it at start)')
 
 		// merge-forward for the target is ALSO NOT created here - merge() creates it at start
@@ -669,8 +646,8 @@ tap.test('handleConflicts', async t => {
 		//
 		// Scenario:
 		// 1. PR merged to release-5.7.1 (base branch)
-		// 2. Auto-merge to release-5.7.2 succeeds, creates merge-forward-pr-999-release-5-7-2
-		// 3. Auto-merge to release-5.8.0 succeeds, creates merge-forward-pr-999-release-5-8-0
+		// 2. Auto-merge to release-5.7.2 succeeds, creates merge-forward-pr-999-release-5.7.2
+		// 3. Auto-merge to release-5.8.0 succeeds, creates merge-forward-pr-999-release-5.8.0
 		// 4. Auto-merge to main succeeds, creates merge-forward-pr-999-main
 		// 5. All branches should have unique names (no duplicates)
 		//
@@ -745,9 +722,9 @@ tap.test('handleConflicts', async t => {
 
 		// Verify each branch got its own uniquely-named merge-forward branch
 		// The key assertion: branch names should be based on TARGET, not source
-		t.ok(createdBranches.has('merge-forward-pr-999-release-5-7-2'),
+		t.ok(createdBranches.has('merge-forward-pr-999-release-5.7.2'),
 			'should create merge-forward branch named after release-5.7.2 target')
-		t.ok(createdBranches.has('merge-forward-pr-999-release-5-8-0'),
+		t.ok(createdBranches.has('merge-forward-pr-999-release-5.8.0'),
 			'should create merge-forward branch named after release-5.8.0 target')
 		t.ok(createdBranches.has('merge-forward-pr-999-main'),
 			'should create merge-forward branch named after main target')
@@ -758,12 +735,12 @@ tap.test('handleConflicts', async t => {
 
 		// Each merge-forward branch should be created exactly once at the START of merge()
 		// then updated (via git branch -f) at the END of merge()
-		const forwardBranchFor572 = branchCreationOrder.filter(b => b === 'merge-forward-pr-999-release-5-7-2')
-		const forwardBranchFor580 = branchCreationOrder.filter(b => b === 'merge-forward-pr-999-release-5-8-0')
+		const forwardBranchFor572 = branchCreationOrder.filter(b => b === 'merge-forward-pr-999-release-5.7.2')
+		const forwardBranchFor580 = branchCreationOrder.filter(b => b === 'merge-forward-pr-999-release-5.8.0')
 		const forwardBranchForMain = branchCreationOrder.filter(b => b === 'merge-forward-pr-999-main')
 
-		t.equal(forwardBranchFor572.length, 1, 'merge-forward-pr-999-release-5-7-2 should be created once')
-		t.equal(forwardBranchFor580.length, 1, 'merge-forward-pr-999-release-5-8-0 should be created once')
+		t.equal(forwardBranchFor572.length, 1, 'merge-forward-pr-999-release-5.7.2 should be created once')
+		t.equal(forwardBranchFor580.length, 1, 'merge-forward-pr-999-release-5.8.0 should be created once')
 		t.equal(forwardBranchForMain.length, 1, 'merge-forward-pr-999-main should be created once')
 	})
 
@@ -899,7 +876,7 @@ tap.test('writeComment', async t => {
 			issueNumber: 54321,
 			conflicts: 'src/app.js\nsrc/config.js',
 			conflictIssueNumber: 99999,
-			conflictBranchName: 'merge-conflicts-99999-release-5-7-to-release-5-8'
+			conflictBranchName: 'merge-conflicts-99999-release-5.7-to-release-5.8'
 		})
 
 		cleanupIssueCommentFile(t)
@@ -913,7 +890,7 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('pull request #12345'), 'should reference original PR')
 		t.ok(content.includes('for issue #54321'), 'should reference issue number')
 		t.ok(content.includes('git fetch'), 'should include git fetch command')
-		t.ok(content.includes('merge-conflicts-99999-release-5-7-to-release-5-8'), 'should use merge-conflicts branch name')
+		t.ok(content.includes('merge-conflicts-99999-release-5.7-to-release-5.8'), 'should use merge-conflicts branch name')
 		// When conflict at first target, we merge PR commit directly
 		t.ok(content.includes('git merge xyz789abc123'),
 			'should merge PR commit directly (no prior merge-forward at first target)')
@@ -924,7 +901,7 @@ tap.test('writeComment', async t => {
 		t.ok(content.includes('Fixes #99999'), 'should include Fixes keyword for new issue')
 		t.ok(content.includes('- src/app.js'), 'should list first conflict file')
 		t.ok(content.includes('- src/config.js'), 'should list second conflict file')
-		t.ok(content.includes('merge-forward-pr-12345-release-5-8'), 'should target merge-forward branch for PR')
+		t.ok(content.includes('merge-forward-pr-12345-release-5.8'), 'should target merge-forward branch for PR')
 	})
 
 	t.test('merges forward (few commits) instead of backward (thousands)', async t => {
@@ -953,7 +930,7 @@ tap.test('writeComment', async t => {
 			issueNumber: 222,
 			conflicts: 'file.js',
 			conflictIssueNumber: 333,
-			conflictBranchName: 'merge-conflicts-333-release-5-8-0-to-main'
+			conflictBranchName: 'merge-conflicts-333-release-5.8.0-to-main'
 		})
 
 		cleanupIssueCommentFile(t)
@@ -961,12 +938,12 @@ tap.test('writeComment', async t => {
 		const content = await readFile(filename, 'utf-8')
 
 		// Should checkout the existing merge-conflicts branch (not create a new one)
-		t.ok(content.includes('git checkout merge-conflicts-333-release-5-8-0-to-main'),
+		t.ok(content.includes('git checkout merge-conflicts-333-release-5.8.0-to-main'),
 			'should checkout the existing merge-conflicts branch')
 
 		// Should merge the PREVIOUS step's merge-forward (the PR's progress) INTO merge-conflicts
 		// This is forward merging (few commits) not backward merging (thousands)
-		t.ok(content.includes('git merge origin/merge-forward-pr-456-release-5-8-0'),
+		t.ok(content.includes('git merge origin/merge-forward-pr-456-release-5.8.0'),
 			'should merge the previous merge-forward branch forward')
 		t.notOk(content.includes('git merge main'),
 			'should NOT merge target backward (thousands of commits)')
@@ -995,7 +972,7 @@ tap.test('writeComment', async t => {
 			issueNumber: null,  // No issue linked to PR
 			conflicts: 'test.js',
 			conflictIssueNumber: 888,
-			conflictBranchName: 'merge-conflicts-888-release-5-7-0-to-release'
+			conflictBranchName: 'merge-conflicts-888-release-5.7.0-to-release'
 		})
 
 		cleanupIssueCommentFile(t)
@@ -1004,7 +981,7 @@ tap.test('writeComment', async t => {
 
 		t.ok(content.includes('pull request #777'), 'should still reference PR')
 		t.notOk(content.includes('for issue #'), 'should not mention issue when none exists')
-		t.ok(content.includes('merge-conflicts-888-release-5-7-0-to-release'), 'should use merge-conflicts branch name')
+		t.ok(content.includes('merge-conflicts-888-release-5.7.0-to-release'), 'should use merge-conflicts branch name')
 	})
 
 	t.test('branch name uses conflict issue number, not original PR issue', async t => {
@@ -1028,14 +1005,14 @@ tap.test('writeComment', async t => {
 			issueNumber: 99999,  // Original PR was fixing issue #99999
 			conflicts: 'file.js',
 			conflictIssueNumber: 11111,  // New conflict issue
-			conflictBranchName: 'merge-conflicts-11111-release-5-7-2-to-release-5-8-0'
+			conflictBranchName: 'merge-conflicts-11111-release-5.7.2-to-release-5.8.0'
 		})
 
 		cleanupIssueCommentFile(t)
 
 		const content = await readFile(filename, 'utf-8')
 
-		t.ok(content.includes('merge-conflicts-11111-release-5-7-2-to-release-5-8-0'),
+		t.ok(content.includes('merge-conflicts-11111-release-5.7.2-to-release-5.8.0'),
 			'should use merge-conflicts branch name')
 		t.notOk(content.includes('issue-11111-pr-12345'),
 			'should not use old issue-* branch naming scheme')
@@ -1047,7 +1024,7 @@ tap.test('writeComment', async t => {
 		// This test reproduces the production bug from issue #69524 where:
 		// 1. PR #69510 was merged to release-5.8.0 (base branch)
 		// 2. Conflict occurred at main (first merge target)
-		// 3. Issue instructions referenced merge-forward-pr-69510-release-5-8-0
+		// 3. Issue instructions referenced merge-forward-pr-69510-release-5.8.0
 		// 4. But that branch never existed (only merge-forward for targets, not base)
 		const core = mockCore({})
 		const { readFile } = require('fs/promises')
@@ -1071,15 +1048,15 @@ tap.test('writeComment', async t => {
 			issueNumber: 69497,
 			conflicts: 'cms/src/com/spider/cms/forms/api/FormsController.java',
 			conflictIssueNumber: 69524,
-			conflictBranchName: 'merge-conflicts-69524-release-5-8-0-to-main'
+			conflictBranchName: 'merge-conflicts-69524-release-5.8.0-to-main'
 		})
 
 		cleanupIssueCommentFile(t)
 
 		const content = await readFile(filename, 'utf-8')
 
-		// Should NOT reference merge-forward-pr-69510-release-5-8-0 (doesn't exist!)
-		t.notOk(content.includes('merge-forward-pr-69510-release-5-8-0'),
+		// Should NOT reference merge-forward-pr-69510-release-5.8.0 (doesn't exist!)
+		t.notOk(content.includes('merge-forward-pr-69510-release-5.8.0'),
 			'should NOT reference merge-forward branch for base (it does not exist)')
 
 		// Should reference the PR commit SHA directly
@@ -1139,8 +1116,8 @@ tap.test('Scenario Beta: Two PRs with conflicts at same point are isolated', asy
 		const branchA = actionA.createMergeForwardBranchName('release-5.8.0')
 		const branchB = actionB.createMergeForwardBranchName('release-5.8.0')
 
-		t.equal(branchA, 'merge-forward-pr-111-release-5-8-0', 'User A gets their own merge-forward branch')
-		t.equal(branchB, 'merge-forward-pr-222-release-5-8-0', 'User B gets their own merge-forward branch')
+		t.equal(branchA, 'merge-forward-pr-111-release-5.8.0', 'User A gets their own merge-forward branch')
+		t.equal(branchB, 'merge-forward-pr-222-release-5.8.0', 'User B gets their own merge-forward branch')
 		t.not(branchA, branchB, 'Different PRs get different merge-forward branches for same target')
 	})
 
@@ -1152,9 +1129,9 @@ tap.test('Scenario Beta: Two PRs with conflicts at same point are isolated', asy
 		const conflictBranchA = actionA.createMergeConflictsBranchName(68001, 'release-5.7.0', 'main')
 		const conflictBranchB = actionB.createMergeConflictsBranchName(68002, 'release-5.7.0', 'main')
 
-		t.equal(conflictBranchA, 'merge-conflicts-68001-pr-111-release-5-7-0-to-main',
+		t.equal(conflictBranchA, 'merge-conflicts-68001-pr-111-release-5.7.0-to-main',
 			'User A gets conflict branch with their issue and PR number')
-		t.equal(conflictBranchB, 'merge-conflicts-68002-pr-222-release-5-7-0-to-main',
+		t.equal(conflictBranchB, 'merge-conflicts-68002-pr-222-release-5.7.0-to-main',
 			'User B gets conflict branch with their issue and PR number')
 		t.not(conflictBranchA, conflictBranchB,
 			'Different issues get different conflict branches even for same merge path')
