@@ -37046,18 +37046,12 @@ class BranchMaintainer {
 		this.core.info(
 			`Advancing ${branchHere} from ${mergeForwardBranch}`)
 
-		try {
-			await this.shell.exec(`git checkout ${branchHere}`)
-			await this.shell.exec(`git pull`)
-			await this.shell.exec(
-				`git merge origin/${mergeForwardBranch} --no-ff ` +
-				`-m "Advance branch-here from completed merge-forward"`)
-			await this.shell.exec(`git push origin ${branchHere}`)
-		} catch (e) {
-			// If merge fails, log and continue - don't block cleanup
-			this.core.info(
-				`Could not advance ${branchHere}: ${e.message}`)
-		}
+		await this.shell.exec(`git checkout ${branchHere}`)
+		await this.shell.exec(`git pull`)
+		await this.shell.exec(
+			`git merge origin/${mergeForwardBranch} --no-ff ` +
+			`-m "Advance branch-here from completed merge-forward"`)
+		await this.shell.exec(`git push origin ${branchHere}`)
 	}
 
 	/**
