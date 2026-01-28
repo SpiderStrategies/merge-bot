@@ -923,6 +923,151 @@ tap.test('Terminal branch (main) is updated when merge-forward chain completes',
 		'main should match merge-forward-pr-123-main after updateTargetBranches')
 })
 
+tap.test('branch-here should NOT advance past blocked commits when another PR succeeds', async t => {
+	// This test reproduces the bug from issue #69842 where Jerry's PR inherited
+	// Cole's conflicts because branch-here-release-5.8.0 advanced past Cole's
+	// blocked commit when a different PR's chain completed.
+	//
+	// Scenario:
+	// 1. Cole's PR merges to release-5.8.0, CONFLICTS at main (blocked)
+	// 2. Other PR merges to release-5.8.0, succeeds all the way to main
+	// 3. BranchMaintainer runs for the successful PR
+	// 4. BUG: branch-here-release-5.8.0 advances to tip (includes Cole's blocked commit)
+	// 5. Jerry's PR merges to release-5.8.0, inherits Cole's conflicts
+	//
+	// EXPECTED: branch-here should only advance to commits that reached main
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	await writeFile(join(repoDir, 'other.txt'), 'Other file\n')
+	git('add .')
+	git('commit -m "Initial"')
+	const initialCommit = git('rev-parse HEAD')
+
+	// Create release-5.8.0
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+
+	// Create branch-here-release-5.8.0 at initial commit
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+	git('checkout release-5.8.0')
+
+	// Create main with DIFFERENT content in test.txt (will conflict with Cole's PR)
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'test.txt'), 'MAIN VERSION\n')
+	git('add test.txt')
+	git('commit -m "Main version"')
+	git('push -u origin main')
+
+	// Cole's PR: modifies test.txt (will conflict with main)
+	git('checkout release-5.8.0')
+	await writeFile(join(repoDir, 'test.txt'), 'COLE VERSION\n')
+	git('add test.txt')
+	git('commit -m "Cole PR - conflicts with main"')
+	const coleCommit = git('rev-parse HEAD')
+	git('push origin release-5.8.0')
+
+	// Simulate: Cole's merge-forward chain was created but BLOCKED at main
+	// (merge-conflicts branch exists, issue created, but not resolved yet)
+	git('checkout main')
+	git('checkout -b merge-conflicts-69824-pr-69448-release-5-8-0-to-main')
+	git('push origin merge-conflicts-69824-pr-69448-release-5-8-0-to-main')
+	git('checkout release-5.8.0')
+
+	// Another PR (successful one): modifies other.txt (no conflict)
+	await writeFile(join(repoDir, 'other.txt'), 'OTHER PR CHANGE\n')
+	git('add other.txt')
+	git('commit -m "Other PR - succeeds to main"')
+	const successfulCommit = git('rev-parse HEAD')
+	git('push origin release-5.8.0')
+
+	// Simulate: The successful PR's chain completed to main
+	// (its content was merged into main)
+	git('checkout main')
+	await writeFile(join(repoDir, 'other.txt'), 'OTHER PR CHANGE\n')
+	git('add other.txt')
+	git('commit -m "Merge other PR to main"')
+	git('push origin main')
+
+	// Verify setup: branch-here is at initial, release-5.8.0 has both PRs
+	const branchHereBefore = git('rev-parse origin/branch-here-release-5.8.0')
+	t.equal(branchHereBefore, initialCommit,
+		'Setup: branch-here should be at initial commit before maintenance')
+
+	// Use real Shell
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// Run BranchMaintainer as if the SUCCESSFUL PR just completed its chain
+	// (PR merged to release-5.8.0, automerge succeeded all the way to main)
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 69823,
+			head: { ref: 'issue-69815-select' },
+			base: { ref: 'release-5.8.0' }
+		},
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.8.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	// Run maintenance (automerge succeeded, so automergeConflictBranch is undefined)
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	// Fetch to get updated refs
+	git('fetch origin')
+
+	// THE KEY ASSERTION: branch-here should NOT have advanced to include Cole's
+	// blocked commit. It should stay at the last commit that actually reached main.
+	const branchHereAfter = git('rev-parse origin/branch-here-release-5.8.0')
+	const releaseTip = git('rev-parse origin/release-5.8.0')
+
+	// The release branch tip includes both Cole's commit and the successful PR's commit
+	t.equal(releaseTip, successfulCommit,
+		'Setup verification: release tip should be at successful PR commit')
+
+	// BUG: Currently branch-here advances to the tip, including Cole's blocked commit
+	// EXPECTED: branch-here should NOT include Cole's blocked commit
+	t.not(branchHereAfter, releaseTip,
+		'branch-here should NOT advance to release tip when there are blocked commits')
+
+	// Verify Jerry would NOT inherit Cole's conflicts
+	// If branch-here advanced correctly, Jerry's merge-forward would be based on
+	// a commit that doesn't include Cole's changes
+	const branchHereContent = git(`show ${branchHereAfter}:test.txt`)
+	t.notOk(branchHereContent.includes('COLE'),
+		'branch-here should NOT include Cole\'s blocked changes')
+})
+
 tap.test('Conflict resolution PR merged to main cleans up merge-forward branches', async t => {
 	// This test verifies that when a conflict resolution PR is merged directly
 	// to `main` (instead of to merge-forward-pr-*-main), the merge-forward
