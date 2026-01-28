@@ -177,16 +177,30 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Updates the branch-here pointer for a given branch by fast-forwarding
-	 * it to the release branch tip.
+	 * Updates the branch-here pointer for a given branch.
 	 *
-	 * In the merge-forward architecture (issue #3), we always advance to the
-	 * branch tip. Conflicts are isolated in merge-forward chains, not release
-	 * branches, so branch-here stays much more up-to-date.
+	 * CRITICAL: Only advances branch-here if there are NO blocked commits from
+	 * this branch. A commit is "blocked" if its merge-forward chain hasn't
+	 * completed to main yet (indicated by merge-conflicts-* branches).
+	 *
+	 * If blocked commits exist, advancing branch-here would cause other
+	 * developers to inherit those conflicts (the bug from issue #69842).
 	 *
 	 * @param {string} branch - The source branch being maintained
 	 */
 	async updateBranchHerePointer(branch) {
+		// Check if there are any blocked merge-conflicts branches FROM this branch
+		// Format: merge-conflicts-{issue}-pr-{pr}-{source}-to-{target}
+		const normalizedBranch = branch.replace(/\./g, '-')
+		const blockedBranches = await this.shell.exec(
+			`git ls-remote --heads origin 'merge-conflicts-*-${normalizedBranch}-to-*'`)
+
+		if (blockedBranches) {
+			this.core.info(
+				`Blocked commits exist from ${branch}, not advancing branch-here`)
+			return
+		}
+
 		await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, `origin/${branch}`)
 	}
 
