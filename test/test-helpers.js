@@ -46,7 +46,7 @@ function createMockShell(core, execBehavior = {}) {
  * @param {Object} config.mergeForwardBranches - Map of PR numbers to arrays of branch info
  *   Example: { '12345': [{ branch: 'release-5-7-1', sha: 'abc123' }] }
  * @param {Object} config.revParse - Map of refs to commit SHAs
- *   Example: { 'origin/merge-forward-pr-12345-release-5-7-1': 'commit-sha-5-7-1' }
+ *   Example: { 'origin/merge-forward-pr-12345-release-5.7.1': 'commit-sha-5.7.1' }
  * @param {Function} config.fallback - Optional fallback handler for unmatched commands
  */
 function createGitShellBehavior(config = {}) {

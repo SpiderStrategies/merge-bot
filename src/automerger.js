@@ -3,6 +3,7 @@ const { writeFile } = require('fs/promises')
 const { findIssueNumber } = require('gh-action-components')
 const IssueResolver = require('./issue-resolver')
 const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
+const { extractPRFromMergeForward, extractTargetFromMergeForward } = require('./branch-name-utils')
 
 /**
  * Handles automatic merging of pull requests forward through the release chain.
@@ -105,44 +106,6 @@ class AutoMerger {
 	}
 
 	/**
-	 * Extracts the original PR number from a merge-forward branch name.
-	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
-	 * @returns {string|null} The original PR number, or null if not a merge-forward branch
-	 */
-	getOriginalPRNumber() {
-		if (!this.isMergeForwardPR()) {
-			return null
-		}
-		const match = this.baseBranch.match(/^merge-forward-pr-(\d+)-/)
-		return match ? match[1] : null
-	}
-
-	/**
-	 * Extracts the target branch from a merge-forward branch name.
-	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
-	 * Example: merge-forward-pr-12345-release-5-8-0 -> release-5.8.0
-	 * @returns {string|null} The target branch with dots restored, or null if not a merge-forward branch
-	 */
-	getMergeForwardTargetBranch() {
-		if (!this.isMergeForwardPR()) {
-			return null
-		}
-		// Remove the prefix and PR number to get the normalized target branch
-		const normalizedTarget = this.baseBranch.replace(/^merge-forward-pr-\d+-/, '')
-
-		// Find the matching branch in mergeTargets by comparing normalized names
-		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
-		for (const target of this.config.mergeTargets) {
-			if (normalizeForBranchName(target) === normalizedTarget) {
-				return target
-			}
-		}
-
-		// Fallback: return normalized name (shouldn't happen in normal operation)
-		return normalizedTarget
-	}
-
-	/**
 	 * Calculates the remaining merge targets from a given starting point.
 	 * @param {string} startBranch The branch to start from (exclusive)
 	 * @returns {string[]} The remaining branches to merge into
@@ -170,7 +133,7 @@ class AutoMerger {
 		let targets
 		if (this.isMergeForwardPR()) {
 			// Resume from where the conflict was resolved
-			const targetBranch = this.getMergeForwardTargetBranch()
+			const targetBranch = extractTargetFromMergeForward(this.baseBranch)
 			targets = this.getRemainingMergeTargets(targetBranch)
 			this.core.info(`Resuming merge chain from ${targetBranch}, remaining targets: ${targets}`)
 		} else {
@@ -255,7 +218,9 @@ class AutoMerger {
 	 *   (unused, kept for compatibility)
 	 */
 	async updateTargetBranches(mergedBranches) {
-		const prNumber = this.isMergeForwardPR() ? this.getOriginalPRNumber() : this.prNumber
+		const prNumber = this.isMergeForwardPR()
+			? extractPRFromMergeForward(this.baseBranch)
+			: this.prNumber
 		const branchNames = await this.findMergeForwardBranches(prNumber)
 
 		if (branchNames.length === 0) {
@@ -266,8 +231,7 @@ class AutoMerger {
 		this.core.info(`Found merge-forward branches: ${branchNames}`)
 
 		for (const mergeForwardBranch of branchNames) {
-			const normalizedTarget = mergeForwardBranch.replace(/^merge-forward-pr-\d+-/, '')
-			const targetBranch = this.denormalizeBranchName(normalizedTarget)
+			const targetBranch = extractTargetFromMergeForward(mergeForwardBranch)
 
 			await this.updateTargetBranch(mergeForwardBranch, targetBranch)
 		}
@@ -277,7 +241,7 @@ class AutoMerger {
 	 * Finds all merge-forward branches for a given PR number by querying remote.
 	 *
 	 * @param {string} prNumber - The PR number to search for
-	 * @returns {Promise<string[]>} Array of merge-forward branch names (e.g., ['merge-forward-pr-123-release-5-8-0'])
+	 * @returns {Promise<string[]>} Array of merge-forward branch names (e.g., ['merge-forward-pr-123-release-5.8.0'])
 	 */
 	async findMergeForwardBranches(prNumber) {
 		this.core.info(`Finding all merge-forward branches for PR #${prNumber}`)
@@ -306,7 +270,7 @@ class AutoMerger {
 	 * Attempts fast-forward first, falls back to merge commit if needed.
 	 *
 	 * @param {string} mergeForwardBranch - The merge-forward branch name
-	 *   (e.g., 'merge-forward-pr-123-release-5-8-0' or 'merge-forward-pr-123-main')
+	 *   (e.g., 'merge-forward-pr-123-release-5.8.0' or 'merge-forward-pr-123-main')
 	 * @param {string} targetBranch - The target branch to update
 	 *   (e.g., 'release-5.8.0' or 'main')
 	 */
@@ -325,25 +289,6 @@ class AutoMerger {
 		}
 
 		await this.git.push(`origin ${targetBranch}`)
-	}
-
-	/**
-	 * Converts a normalized branch name back to the actual branch name.
-	 * This tries to match against configured branches to find the right format.
-	 *
-	 * @param {string} normalized - Normalized branch name (e.g., "release-5-8-0")
-	 * @returns {string} - Actual branch name (e.g., "release-5.8.0")
-	 */
-	denormalizeBranchName(normalized) {
-		// Check if any configured branch normalizes to this
-		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
-		for (const target of this.config.mergeTargets) {
-			if (normalizeForBranchName(target) === normalized) {
-				return target
-			}
-		}
-		// Fallback: return normalized name as-is
-		return normalized
 	}
 
 	/**
@@ -455,24 +400,19 @@ class AutoMerger {
 	/**
 	 * Creates a merge-conflicts branch name that encodes the PR, source, and target branches
 	 * Format: merge-conflicts-{issueNumber}-pr-{prNumber}-{sourceBranch}-to-{targetBranch}
-	 * Example: merge-conflicts-68586-pr-123-release-5-8-0-to-main
+	 * Example: merge-conflicts-68586-pr-123-release-5.8.0-to-main
 	 */
 	createMergeConflictsBranchName(issueNumber, sourceBranch, targetBranch) {
-		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
-		const normalizedSource = normalizeForBranchName(sourceBranch)
-		const normalizedTarget = normalizeForBranchName(targetBranch)
-		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-pr-${this.prNumber}-${normalizedSource}-to-${normalizedTarget}`
+		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-pr-${this.prNumber}-${sourceBranch}-to-${targetBranch}`
 	}
 
 	/**
 	 * Creates a merge-forward branch name for tracking this PR's isolated merge chain
 	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
-	 * Example: merge-forward-pr-123-release-5-8-0
+	 * Example: merge-forward-pr-123-release-5.8.0
 	 */
 	createMergeForwardBranchName(targetBranch) {
-		const normalizeForBranchName = (branch) => branch.replace(/\./g, '-')
-		const normalizedTarget = normalizeForBranchName(targetBranch)
-		return `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${normalizedTarget}`
+		return `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${targetBranch}`
 	}
 
 	/**
