@@ -1214,3 +1214,146 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	t.equal(branchHereCommitAfter, releaseCommitAfter,
 		'branch-here-release-5.8.0 should be advanced to match release-5.8.0')
 })
+
+tap.test('branch-here advances incrementally via merge-forward (issue #11)', async t => {
+	// This test verifies the enhancement from issue #11:
+	// branch-here should advance incrementally as each PR's chain completes,
+	// even while other PRs remain blocked.
+	//
+	// Scenario:
+	// 1. Two PRs create merge-forward branches from branch-here (at A)
+	// 2. PR1's chain completes (merge-forward-pr-1 cleaned up)
+	// 3. branch-here should advance to include PR1's changes
+	// 4. PR2 is still blocked (merge-conflicts branch exists)
+	// 5. branch-here should NOT include PR2's changes
+	//
+	// The key: branch-here advances by merging completed merge-forward branches,
+	// not by fast-forwarding to the release branch tip.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+	const initialCommit = git('rev-parse HEAD')
+
+	// Create release-5.8.0
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+
+	// Create branch-here-release-5.8.0 at initial commit
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	// Create main
+	git('checkout -b main')
+	git('push -u origin main')
+
+	// PR1's merge-forward branch: adds file1.txt (will complete successfully)
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-111-release-5-8-0')
+	await writeFile(join(repoDir, 'file1.txt'), 'PR1 content\n')
+	git('add file1.txt')
+	git('commit -m "PR1 changes"')
+	const pr1MergeForwardCommit = git('rev-parse HEAD')
+	git('push -u origin merge-forward-pr-111-release-5-8-0')
+
+	// PR1's merge-forward for main (also exists, will be cleaned up)
+	git('checkout main')
+	git('checkout -b merge-forward-pr-111-main')
+	await writeFile(join(repoDir, 'file1.txt'), 'PR1 content\n')
+	git('add file1.txt')
+	git('commit -m "PR1 to main"')
+	git('push -u origin merge-forward-pr-111-main')
+
+	// PR2's merge-forward branch: adds file2.txt (will be blocked)
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-222-release-5-8-0')
+	await writeFile(join(repoDir, 'file2.txt'), 'PR2 content\n')
+	git('add file2.txt')
+	git('commit -m "PR2 changes"')
+	git('push -u origin merge-forward-pr-222-release-5-8-0')
+
+	// PR2 is blocked: create merge-conflicts branch
+	git('checkout main')
+	git('checkout -b merge-conflicts-999-pr-222-release-5-8-0-to-main')
+	git('push -u origin merge-conflicts-999-pr-222-release-5-8-0-to-main')
+
+	// Verify setup
+	const branchHereBefore = git('rev-parse origin/branch-here-release-5.8.0')
+	t.equal(branchHereBefore, initialCommit,
+		'Setup: branch-here should be at initial commit')
+
+	// Use real Shell
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// Simulate PR1's chain completing (resolution PR merged to main)
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 333,
+			head: { ref: 'merge-conflicts-888-pr-111-release-5-8-0-to-main' },
+			base: { ref: 'main' }
+		},
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.8.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	// Fetch updated refs
+	git('fetch origin')
+
+	// Verify PR1's merge-forward branches were cleaned up
+	const branchesAfter = git('ls-remote --heads origin')
+	t.notOk(branchesAfter.includes('merge-forward-pr-111-release-5-8-0'),
+		'PR1 merge-forward for release-5.8.0 should be cleaned up')
+	t.notOk(branchesAfter.includes('merge-forward-pr-111-main'),
+		'PR1 merge-forward for main should be cleaned up')
+
+	// Verify PR2's merge-forward still exists (chain not complete)
+	t.ok(branchesAfter.includes('merge-forward-pr-222-release-5-8-0'),
+		'PR2 merge-forward should still exist (blocked)')
+
+	// KEY ASSERTION: branch-here should include PR1's changes
+	const branchHereAfter = git('rev-parse origin/branch-here-release-5.8.0')
+	t.not(branchHereAfter, initialCommit,
+		'branch-here should have advanced from initial commit')
+
+	// Verify PR1's file is in branch-here
+	const pr1FileInBranchHere = git(`ls-tree --name-only ${branchHereAfter}`)
+	t.ok(pr1FileInBranchHere.includes('file1.txt'),
+		'branch-here should include PR1\'s file (file1.txt)')
+
+	// Verify PR2's file is NOT in branch-here (PR2 is blocked)
+	t.notOk(pr1FileInBranchHere.includes('file2.txt'),
+		'branch-here should NOT include PR2\'s file (file2.txt) - PR2 is blocked')
+})
