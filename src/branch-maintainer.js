@@ -122,10 +122,12 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Deletes all merge-forward branches for a given PR number.
-	 * Deletes all branches matching the pattern: merge-forward-pr-{prNumber}-*
+	 * Cleans up merge-forward branches for a given PR number.
+	 * Before deleting each branch, merges it into the corresponding branch-here
+	 * to incrementally advance branch-here with completed changes (issue #11).
 	 *
-	 * @param {string|number} prNumber - The PR number whose merge-forward branches to delete
+	 * @param {string|number} prNumber - The PR number whose merge-forward
+	 *   branches to clean up
 	 */
 	async cleanupMergeForwardBranchesForPR(prNumber) {
 		const pattern = `${MB_BRANCH_FORWARD_PREFIX}${prNumber}-`
@@ -146,10 +148,68 @@ class BranchMaintainer {
 			.filter(name => name)
 
 		for (const branchName of branchNames) {
+			// Merge into branch-here before deleting (issue #11)
+			await this.advanceBranchHereFromMergeForward(branchName)
+
 			this.core.info(`Deleting merge-forward branch: ${branchName}`)
 			await this.shell.execQuietly(
 				`git push origin --delete ${branchName}`)
 		}
+	}
+
+	/**
+	 * Advances branch-here by merging a completed merge-forward branch into it.
+	 * This enables incremental advancement as each PR's chain completes (issue #11).
+	 *
+	 * @param {string} mergeForwardBranch - The merge-forward branch name
+	 *   (e.g., 'merge-forward-pr-123-release-5-8-0')
+	 */
+	async advanceBranchHereFromMergeForward(mergeForwardBranch) {
+		// Extract target branch from merge-forward name
+		// Format: merge-forward-pr-{prNumber}-{normalizedTarget}
+		const normalizedTarget = mergeForwardBranch.replace(
+			/^merge-forward-pr-\d+-/, '')
+		const targetBranch = this.denormalizeBranchName(normalizedTarget)
+
+		// Skip terminal branch (no branch-here for main)
+		if (targetBranch === this.terminalBranch) {
+			return
+		}
+
+		const branchHere = MB_BRANCH_HERE_PREFIX + targetBranch
+		this.core.info(
+			`Advancing ${branchHere} from ${mergeForwardBranch}`)
+
+		try {
+			await this.shell.exec(`git checkout ${branchHere}`)
+			await this.shell.exec(`git pull`)
+			await this.shell.exec(
+				`git merge origin/${mergeForwardBranch} --no-ff ` +
+				`-m "Advance branch-here from completed merge-forward"`)
+			await this.shell.exec(`git push origin ${branchHere}`)
+		} catch (e) {
+			// If merge fails, log and continue - don't block cleanup
+			this.core.info(
+				`Could not advance ${branchHere}: ${e.message}`)
+		}
+	}
+
+	/**
+	 * Converts a normalized branch name back to the actual branch name.
+	 * E.g., "release-5-8-0" -> "release-5.8.0"
+	 *
+	 * @param {string} normalized - Normalized branch name
+	 * @returns {string} Actual branch name
+	 */
+	denormalizeBranchName(normalized) {
+		const branches = Object.keys(this.config.branches)
+		for (const branch of branches) {
+			if (branch.replace(/\./g, '-') === normalized) {
+				return branch
+			}
+		}
+		// Fallback: return as-is (e.g., for 'main')
+		return normalized
 	}
 
 	/**
