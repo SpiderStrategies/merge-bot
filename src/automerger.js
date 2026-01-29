@@ -384,6 +384,7 @@ class AutoMerger {
 			const encodedBranchName = this.createMergeConflictsBranchName(
 				newIssueNumber, this.lastSuccessfulBranch, branch)
 			await this.git.createBranch(encodedBranchName, this.getBranchHereRef(branch))
+			await this.git.push(`origin ${encodedBranchName}`)
 
 			// Note: merge-forward branch for the target was already created by merge()
 			// at the start of the merge attempt, so we don't create it here.

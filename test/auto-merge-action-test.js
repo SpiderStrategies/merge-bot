@@ -555,6 +555,85 @@ tap.test('handleConflicts', async t => {
 		t.notOk(action.conflictBranch, 'should not set conflictBranch when no conflicts')
 	})
 
+	t.test('pushes merge-conflicts branch to remote after creation', async t => {
+		// Issue #69864: The merge-conflicts branch was created locally but never
+		// pushed to remote. Jerry couldn't checkout the branch because it didn't
+		// exist on the remote.
+		const core = mockCore({})
+		const shellCommands = []
+		const gitCommands = []
+
+		const shell = createMockShell(core, (cmd) => {
+			shellCommands.push(cmd)
+			if (cmd.startsWith('git diff --name-only')) {
+				return 'src/file1.js'
+			}
+			return ''
+		})
+
+		const git = createMockGit(shell, { callTracker: gitCommands })
+		git.createBranch = async (branchName, ref) => {
+			gitCommands.push(`createBranch:${branchName}:${ref}`)
+		}
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async createIssue() {
+				return { data: { number: 69864, html_url: 'https://github.com/sample/repo/issues/69864' } }
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test', email: 'test@example.com' },
+							message: 'Test commit'
+						}
+					}]
+				}
+			}
+		}
+
+		const action = new TestAutoMerger({
+			prNumber: 69847,
+			prAuthor: 'jerryorr',
+			prCommitSha: 'b8601e3814a0',
+			baseBranch: 'release-5.7.0',
+			config: {
+				branches: { 'release-5.7.1': { milestoneNumber: 42 } },
+				mergeTargets: ['release-5.7.1', 'main']
+			},
+			core,
+			shell,
+			git,
+			gh: mockGh
+		})
+		action.issueNumber = 69798
+		action.lastSuccessfulMergeRef = 'b8601e3814a0'
+		action.lastSuccessfulBranch = 'release-5.7.0'
+		action.terminalBranch = 'main'
+
+		await action.handleConflicts('release-5.7.1')
+
+		// Verify merge-conflicts branch was created
+		const createBranchCmd = gitCommands.find(c =>
+			c.includes('createBranch:merge-conflicts-69864-pr-69847-release-5.7.0-to-release-5.7.1')
+		)
+		t.ok(createBranchCmd, 'should create merge-conflicts branch')
+
+		// KEY ASSERTION: Verify merge-conflicts branch was pushed to remote
+		const pushCmd = gitCommands.find(c =>
+			c.includes('push:') &&
+			c.includes('merge-conflicts-69864-pr-69847-release-5.7.0-to-release-5.7.1')
+		)
+		t.ok(pushCmd, 'should push merge-conflicts branch to remote (bug fix for #69864)')
+	})
+
 	t.test('does NOT create duplicate merge-forward branch (already created by merge())', async t => {
 		// This test reproduces the bug from production where handleConflicts() tried to
 		// create merge-forward-pr-69510-main but it already existed (created by merge())
