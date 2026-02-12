@@ -1358,6 +1358,116 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 		'branch-here should NOT include PR2\'s file (file2.txt) - PR2 is blocked')
 })
 
+tap.test('branch-here remains ancestor of release branch after advancement', async t => {
+	// This tests the fix for the bug where advanceBranchHereFromMergeForward
+	// created a merge commit on branch-here that didn't exist on the release
+	// branch, causing the two to diverge. After the fix, branch-here should
+	// always remain an ancestor of the release branch.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+
+	// Create release-5.8.0
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+
+	// Create branch-here at same point
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	// Create main (terminal branch)
+	git('checkout -b main')
+	git('push -u origin main')
+
+	// Add a direct PR commit to release-5.8.0 (so release is ahead
+	// of branch-here, simulating real-world divergence)
+	git('checkout release-5.8.0')
+	await writeFile(join(repoDir, 'direct-pr.txt'), 'Direct PR\n')
+	git('add direct-pr.txt')
+	git('commit -m "Direct PR to release"')
+	git('push origin release-5.8.0')
+
+	// Create merge-forward branch based on branch-here (as automerger does)
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-70168-release-5.8.0')
+	await writeFile(join(repoDir, 'pr-feature.txt'), 'PR feature\n')
+	git('add pr-feature.txt')
+	git('commit -m "PR 70168 changes"')
+	git('push -u origin merge-forward-pr-70168-release-5.8.0')
+
+	// Simulate updateTargetBranch: merge merge-forward into release-5.8.0
+	// (this is what automerger does when the chain completes)
+	git('checkout release-5.8.0')
+	git('merge origin/merge-forward-pr-70168-release-5.8.0 --no-ff ' +
+		'-m "Merge commit from updateTargetBranch"')
+	git('push origin release-5.8.0')
+
+	// Set up shell for BranchMaintainer
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 70168,
+			head: { ref: 'feature-branch' },
+			base: { ref: 'release-5.8.0' }
+		},
+		config: {
+			branches: { 'release-5.8.0': {}, 'main': {} },
+			mergeOperations: {}
+		},
+		core,
+		shell
+	})
+
+	// Run the method under test
+	await maintainer.advanceBranchHereFromMergeForward(
+		'merge-forward-pr-70168-release-5.8.0')
+
+	// Fetch updated refs
+	git('fetch origin')
+
+	// KEY ASSERTION: branch-here must be an ancestor of release-5.8.0
+	let isAncestor
+	try {
+		git('merge-base --is-ancestor ' +
+			'origin/branch-here-release-5.8.0 origin/release-5.8.0')
+		isAncestor = true
+	} catch (e) {
+		isAncestor = false
+	}
+
+	t.ok(isAncestor,
+		'branch-here should be an ancestor of release-5.8.0 ' +
+		'(not diverged)')
+
+	// Verify branch-here actually advanced (has the PR's file)
+	const branchHereFiles = git(
+		'ls-tree --name-only origin/branch-here-release-5.8.0')
+	t.ok(branchHereFiles.includes('pr-feature.txt'),
+		'branch-here should include PR feature file')
+
+	// Verify the commit messages include the PR number
+	const branchHereLog = git(
+		'log origin/branch-here-release-5.8.0 --oneline -1')
+	t.ok(branchHereLog.includes('#70168'),
+		'branch-here merge commit should reference PR number')
+})
+
 tap.test('branch names with periods work without normalization (issue #14)', async t => {
 	// This test verifies that branch names containing periods (e.g., release-5.8.0)
 	// work correctly in merge-forward and merge-conflicts branch names without
