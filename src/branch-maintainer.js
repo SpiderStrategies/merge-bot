@@ -1,5 +1,9 @@
 const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX } = require('./constants')
-const { extractPRFromMergeConflicts, extractTargetFromMergeForward } = require('./branch-name-utils')
+const {
+	extractPRFromMergeConflicts,
+	extractPRFromMergeForward,
+	extractTargetFromMergeForward
+} = require('./branch-name-utils')
 
 /**
  * Maintains branch-here pointers by updating them to the latest commit that
@@ -154,30 +158,53 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Advances branch-here by merging a completed merge-forward branch into it.
-	 * This enables incremental advancement as each PR's chain completes (issue #11).
+	 * Advances branch-here by merging a completed merge-forward branch
+	 * into it, then merges branch-here into the release branch to
+	 * preserve the ancestry relationship (issue #19).
+	 *
+	 * The second merge is critical: without it, branch-here would have
+	 * a merge commit that doesn't exist on the release branch, causing
+	 * them to diverge. By merging branch-here into the release branch
+	 * afterward, branch-here remains an ancestor of the release branch.
+	 * This merge is always content-neutral since the release branch
+	 * already has the merge-forward content via updateTargetBranch.
 	 *
 	 * @param {string} mergeForwardBranch - The merge-forward branch name
 	 *   (e.g., 'merge-forward-pr-123-release-5.8.0')
 	 */
 	async advanceBranchHereFromMergeForward(mergeForwardBranch) {
-		const targetBranch = extractTargetFromMergeForward(mergeForwardBranch)
+		const targetBranch =
+			extractTargetFromMergeForward(mergeForwardBranch)
 
 		// Skip terminal branch (no branch-here for main)
 		if (targetBranch === this.terminalBranch) {
 			return
 		}
 
+		const prNumber = extractPRFromMergeForward(mergeForwardBranch)
 		const branchHere = MB_BRANCH_HERE_PREFIX + targetBranch
 		this.core.info(
 			`Advancing ${branchHere} from ${mergeForwardBranch}`)
 
+		// Step 1: Merge merge-forward into branch-here
 		await this.shell.exec(`git checkout ${branchHere}`)
 		await this.shell.exec(`git pull`)
 		await this.shell.exec(
 			`git merge origin/${mergeForwardBranch} --no-ff ` +
-			`-m "Advance branch-here from completed merge-forward"`)
+			`-m "Merge #${prNumber} into ${branchHere}"`)
 		await this.shell.exec(`git push origin ${branchHere}`)
+
+		// Issue #19 - Merge branch-here into the release branch to
+		// preserve ancestry. Without this, branch-here would diverge
+		// from the release branch because the merge commit above
+		// doesn't exist on the release branch.
+		await this.shell.exec(`git checkout ${targetBranch}`)
+		await this.shell.exec(`git pull`)
+		await this.shell.exec(
+			`git merge ${branchHere} --no-ff ` +
+			`-m "Merge #${prNumber} from ${branchHere}` +
+			` to ${targetBranch}"`)
+		await this.shell.exec(`git push origin ${targetBranch}`)
 	}
 
 	/**

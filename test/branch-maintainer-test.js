@@ -299,6 +299,92 @@ tap.test('run does not cleanup when commits blocked', async t => {
 	t.equal(deletedBranches.length, 0, 'should not cleanup merge-forward branches when commits are blocked')
 })
 
+tap.test('advanceBranchHereFromMergeForward', async t => {
+	t.test('merges into both branch-here and release branch', async t => {
+		const execCalls = []
+		const core = mockCore({})
+
+		const mockShell = {
+			core,
+			async exec(cmd) {
+				execCalls.push(cmd)
+				return ''
+			},
+			async execQuietly(cmd) {
+				execCalls.push(cmd)
+				return ''
+			}
+		}
+
+		const maintainer = new BranchMaintainer({
+			pullRequest: {
+				number: 70168,
+				head: { ref: 'feature-branch' },
+				base: { ref: 'release-5.8.0' },
+				merged: true
+			},
+			config: {
+				branches: { 'release-5.8.0': {}, 'main': {} },
+				mergeOperations: {}
+			},
+			core,
+			shell: mockShell
+		})
+
+		await maintainer.advanceBranchHereFromMergeForward(
+			'merge-forward-pr-70168-release-5.8.0')
+
+		// Should merge merge-forward into branch-here
+		const branchHereMerge = execCalls.find(c =>
+			c.includes('git merge') &&
+			c.includes('Merge #70168 into branch-here-release-5.8.0'))
+		t.ok(branchHereMerge,
+			'should merge into branch-here with PR number in message')
+
+		// Should then merge branch-here into the release branch
+		const releaseBranchMerge = execCalls.find(c =>
+			c.includes('git merge') &&
+			c.includes(
+				'Merge #70168 from branch-here-release-5.8.0' +
+				' to release-5.8.0'))
+		t.ok(releaseBranchMerge,
+			'should merge branch-here into release branch ' +
+			'with PR number in message')
+	})
+
+	t.test('skips terminal branch', async t => {
+		const execCalls = []
+		const core = mockCore({})
+
+		const mockShell = {
+			core,
+			async exec(cmd) { execCalls.push(cmd); return '' },
+			async execQuietly(cmd) { execCalls.push(cmd); return '' }
+		}
+
+		const maintainer = new BranchMaintainer({
+			pullRequest: {
+				number: 70168,
+				head: { ref: 'feature-branch' },
+				base: { ref: 'release-5.8.0' },
+				merged: true
+			},
+			config: {
+				branches: { 'release-5.8.0': {}, 'main': {} },
+				mergeOperations: {}
+			},
+			core,
+			shell: mockShell
+		})
+
+		await maintainer.advanceBranchHereFromMergeForward(
+			'merge-forward-pr-70168-main')
+
+		t.equal(execCalls.length, 0,
+			'should not execute any commands for terminal branch')
+	})
+})
+
 tap.test('fastForward', async t => {
 	t.test('creates new branch when branch does not exist', async t => {
 		const execCalls = []
