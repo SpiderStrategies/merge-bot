@@ -38,6 +38,8 @@ The script merges all release branches forward, updates branch-here pointers, an
 
 - Original implementation: #42921
 - Conflict isolation with merge-forward branches: #3
+- Incremental branch-here advancement: #11
+- Branch-here divergence fix: #19
 
 ## Testing
 
