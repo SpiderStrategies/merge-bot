@@ -519,8 +519,8 @@ tap.test('handleConflicts', async t => {
 		t.ok(gitCommands.find(c => c.includes('reset')), 'should reset branch')
 
 		// merge-conflicts should be based on the TARGET (main) so forward merging works
-		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-pr-999-release-5.8.0-to-main:main')),
-			'should create merge-conflicts based on TARGET (main) for forward merging')
+		t.ok(gitCommands.find(c => c.includes('createBranch:merge-conflicts-68586-pr-999-release-5.8.0-to-main:origin/main')),
+			'should create merge-conflicts based on TARGET (origin/main) for forward merging')
 
 		// Previous merge-forward is NOT created here - it was created by merge() at start
 		t.notOk(gitCommands.find(c => c.includes('createBranch:merge-forward-pr-999-release-5.8.0')),
@@ -620,11 +620,12 @@ tap.test('handleConflicts', async t => {
 
 		await action.handleConflicts('release-5.7.1')
 
-		// Verify merge-conflicts branch was created
+		// Verify merge-conflicts branch was created from origin/ ref
 		const createBranchCmd = gitCommands.find(c =>
-			c.includes('createBranch:merge-conflicts-69864-pr-69847-release-5.7.0-to-release-5.7.1')
+			c.includes('createBranch:merge-conflicts-69864-pr-69847-release-5.7.0-to-release-5.7.1:origin/branch-here-release-5.7.1')
 		)
-		t.ok(createBranchCmd, 'should create merge-conflicts branch')
+		t.ok(createBranchCmd,
+			'should create merge-conflicts branch from origin/ ref')
 
 		// KEY ASSERTION: Verify merge-conflicts branch was pushed to remote
 		const pushCmd = gitCommands.find(c =>
