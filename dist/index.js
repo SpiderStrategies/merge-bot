@@ -36728,7 +36728,9 @@ class AutoMerger {
 			// This pulls just the PR's few commits forward, not thousands backward.
 			const encodedBranchName = this.createMergeConflictsBranchName(
 				newIssueNumber, this.lastSuccessfulBranch, branch)
-			await this.git.createBranch(encodedBranchName, this.getBranchHereRef(branch))
+			const targetRef = this.getBranchHereRef(branch)
+			await this.git.createBranch(
+				encodedBranchName, `origin/${targetRef}`)
 			await this.git.push(`origin ${encodedBranchName}`)
 
 			// Note: merge-forward branch for the target was already created by merge()
