@@ -1208,11 +1208,25 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	t.notOk(branchesAfter.includes('merge-forward-pr-69561-main'),
 		'merge-forward for main should be cleaned up')
 
-	// Verify branch-here was advanced to match release-5.8.0
-	const releaseCommitAfter = git('rev-parse origin/release-5.8.0')
+	// Verify branch-here was advanced (has the PR content)
 	const branchHereCommitAfter = git('rev-parse origin/branch-here-release-5.8.0')
-	t.equal(branchHereCommitAfter, releaseCommitAfter,
-		'branch-here-release-5.8.0 should be advanced to match release-5.8.0')
+	t.not(branchHereCommitAfter, branchHereCommitBefore,
+		'branch-here-release-5.8.0 should have advanced')
+	const branchHereContent = git(`show ${branchHereCommitAfter}:test.txt`)
+	t.equal(branchHereContent, 'PR CONTENT',
+		'branch-here should have PR content after advancement')
+
+	// Verify branch-here is an ancestor of release-5.8.0
+	let isAncestor
+	try {
+		git('merge-base --is-ancestor ' +
+			'origin/branch-here-release-5.8.0 origin/release-5.8.0')
+		isAncestor = true
+	} catch (e) {
+		isAncestor = false
+	}
+	t.ok(isAncestor,
+		'branch-here should be an ancestor of release-5.8.0')
 })
 
 tap.test('branch-here advances incrementally via merge-forward (issue #11)', async t => {
@@ -1466,6 +1480,154 @@ tap.test('branch-here remains ancestor of release branch after advancement', asy
 		'log origin/branch-here-release-5.8.0 --oneline -1')
 	t.ok(branchHereLog.includes('#70168'),
 		'branch-here merge commit should reference PR number')
+})
+
+tap.test('branch-here should not advance past commits blocked DOWNSTREAM', async t => {
+	// This reproduces the bug from issue #70306 (Jack's PR).
+	//
+	// Scenario with three branches: release-5.7.2 → release-5.8.0 → main
+	// 1. PR A merges into release-5.7.2, chain passes release-5.8.0
+	//    but CONFLICTS at main → merge-conflicts-*-release-5.8.0-to-main
+	// 2. PR B merges into release-5.7.2, chain completes to main
+	// 3. BranchMaintainer runs for PR B
+	// 4. BUG: branch-here-release-5.7.2 advances to origin/release-5.7.2,
+	//    which includes PR A's commit (chain incomplete!)
+	// 5. EXPECTED: branch-here-release-5.7.2 should only include PR B's
+	//    changes (via merge-forward), not PR A's
+	//
+	// This happens because updateBranchHerePointer checks for
+	// merge-conflicts-*-release-5.7.2-to-* but PR A's conflict is at
+	// release-5.8.0-to-main, so the check misses it.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: Create initial commit
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+	const initialCommit = git('rev-parse HEAD')
+
+	// Create release-5.7.2
+	git('checkout -b release-5.7.2')
+	git('push -u origin release-5.7.2')
+
+	// Create branch-here-release-5.7.2 at initial commit
+	git('checkout -b branch-here-release-5.7.2')
+	git('push -u origin branch-here-release-5.7.2')
+	git('checkout release-5.7.2')
+
+	// Create release-5.8.0
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+
+	// Create branch-here-release-5.8.0 at initial commit
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	// Create main
+	git('checkout -b main')
+	git('push -u origin main')
+
+	// PR A: merged directly into release-5.7.2 (adds a.txt)
+	// Its chain passed through release-5.8.0 but is blocked at main
+	git('checkout release-5.7.2')
+	await writeFile(join(repoDir, 'a.txt'), 'PR A content\n')
+	git('add a.txt')
+	git('commit -m "PR A - blocked downstream"')
+	git('push origin release-5.7.2')
+
+	// PR B: also merged directly into release-5.7.2 (adds b.txt)
+	// Its chain completed all the way to main
+	await writeFile(join(repoDir, 'b.txt'), 'PR B content\n')
+	git('add b.txt')
+	git('commit -m "PR B - completes to main"')
+	git('push origin release-5.7.2')
+
+	// PR A is blocked: create merge-conflicts from release-5.8.0
+	// (NOT from release-5.7.2 - this is the key detail!)
+	git('checkout main')
+	git('checkout -b merge-conflicts-500-pr-100-release-5.8.0-to-main')
+	git('push -u origin merge-conflicts-500-pr-100-release-5.8.0-to-main')
+
+	// PR B's merge-forward branches (created by automerger, based on
+	// branch-here snapshots). These are what BranchMaintainer cleans up.
+	git('checkout branch-here-release-5.7.2')
+	git('checkout -b merge-forward-pr-200-release-5.7.2')
+	await writeFile(join(repoDir, 'b.txt'), 'PR B content\n')
+	git('add b.txt')
+	git('commit -m "PR B merge-forward to release-5.7.2"')
+	git('push -u origin merge-forward-pr-200-release-5.7.2')
+
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-200-release-5.8.0')
+	await writeFile(join(repoDir, 'b.txt'), 'PR B content\n')
+	git('add b.txt')
+	git('commit -m "PR B merge-forward to release-5.8.0"')
+	git('push -u origin merge-forward-pr-200-release-5.8.0')
+
+	// Verify setup
+	const branchHereBefore = git('rev-parse origin/branch-here-release-5.7.2')
+	t.equal(branchHereBefore, initialCommit,
+		'Setup: branch-here should be at initial commit')
+
+	// Use real Shell
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// PR B's chain completed (merged to release-5.7.2, automerge succeeded)
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 200,
+			head: { ref: 'issue-200-feature' },
+			base: { ref: 'release-5.7.2' }
+		},
+		config: {
+			branches: {
+				'release-5.7.2': {},
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.7.2': 'release-5.8.0',
+				'release-5.8.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	// Fetch updated refs
+	git('fetch origin')
+
+	// KEY ASSERTION: branch-here-release-5.7.2 should NOT contain a.txt
+	// (PR A's chain hasn't completed to main)
+	const branchHereAfter = git('rev-parse origin/branch-here-release-5.7.2')
+	const branchHereFiles = git(
+		`ls-tree --name-only ${branchHereAfter}`)
+	t.ok(branchHereFiles.includes('b.txt'),
+		'branch-here should include PR B file (chain completed)')
+	t.notOk(branchHereFiles.includes('a.txt'),
+		'branch-here should NOT include PR A file (chain blocked downstream)')
 })
 
 tap.test('branch names with periods work without normalization (issue #14)', async t => {

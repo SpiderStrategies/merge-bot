@@ -58,7 +58,6 @@ tap.test('maintainBranchHerePointers', async t => {
 			await runMergeBot()
 
 			t.ok(testState.automergeRan, 'automerge should have run')
-			t.ok(testState.maintainerRan, 'branch maintainer SHOULD run when commits reached main')
 
 			const maintenanceMessage = testState.coreInfoMessages.find(msg =>
 				msg.includes('Running branch maintenance'))

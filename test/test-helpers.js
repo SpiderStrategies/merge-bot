@@ -250,7 +250,6 @@ function createTestEnvironment({
 	const coreInfoMessages = []
 	const testState = {
 		automergeRan: false,
-		maintainerRan: false,
 		cleanupMergeConflictsBranchCalled: false,
 		terminalBranch: undefined,
 		conflictBranch: undefined,
@@ -308,11 +307,6 @@ function createMergeBotTestActions(testState) {
 		async cleanupMergeConflictsBranch() {
 			testState.cleanupMergeConflictsBranchCalled = true
 			await super.cleanupMergeConflictsBranch()
-		}
-
-		async maintainBranches() {
-			testState.maintainerRan = true
-			// Don't actually run maintenance in tests
 		}
 	}
 
