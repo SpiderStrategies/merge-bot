@@ -64,7 +64,6 @@ class BranchMaintainer {
 
 		if (shouldCleanup) {
 			this.core.info(`Running branch maintenance: commits reached main`)
-			await this.maintainBranches()
 			await this.cleanupMergeForwardBranches()
 		} else if (isTerminalBranch) {
 			this.core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
@@ -207,74 +206,6 @@ class BranchMaintainer {
 		await this.shell.exec(`git push origin ${targetBranch}`)
 	}
 
-	/**
-	 * Maintains branch-here pointers for all branches in the config.
-	 */
-	async maintainBranches() {
-		const branches = Object.keys(this.config.branches)
-		this.core.info(`branches: ${JSON.stringify(branches)}`)
-		this.core.info(`terminal branch: ${this.terminalBranch}`)
-
-		for (const branch of branches) {
-			if (branch === this.terminalBranch) {
-				this.core.info(`At terminal branch (${branch}), no maintenance required`)
-				break
-			}
-			this.core.info(`Maintaining branch-here pointer for: ${branch}`)
-			try {
-				await this.shell.exec(`git checkout ${branch}`)
-				await this.updateBranchHerePointer(branch)
-			} catch (e) {
-				this.core.error(e)
-				throw e
-			}
-		}
-	}
-
-	/**
-	 * Updates the branch-here pointer for a given branch.
-	 *
-	 * CRITICAL: Only advances branch-here if there are NO blocked commits from
-	 * this branch. A commit is "blocked" if its merge-forward chain hasn't
-	 * completed to main yet (indicated by merge-conflicts-* branches).
-	 *
-	 * If blocked commits exist, advancing branch-here would cause other
-	 * developers to inherit those conflicts (the bug from issue #69842).
-	 *
-	 * @param {string} branch - The source branch being maintained
-	 */
-	async updateBranchHerePointer(branch) {
-		// Check if there are any blocked merge-conflicts branches FROM this branch
-		// Format: merge-conflicts-{issue}-pr-{pr}-{source}-to-{target}
-		const blockedBranches = await this.shell.exec(
-			`git ls-remote --heads origin 'merge-conflicts-*-${branch}-to-*'`)
-
-		if (blockedBranches) {
-			this.core.info(
-				`Blocked commits exist from ${branch}, not advancing branch-here`)
-			return
-		}
-
-		await this.fastForward(MB_BRANCH_HERE_PREFIX + branch, `origin/${branch}`)
-	}
-
-	/**
-	 * Fast-forwards a branch to a new commit.
-	 *
-	 * @param {string} branch - The branch name to fast-forward
-	 * @param {string} cleanMergePoint - The commit/ref to fast-forward to
-	 */
-	async fastForward(branch, cleanMergePoint) {
-		const branchExists = await this.shell.exec(`git ls-remote --heads origin ${branch}`)
-		if (branchExists) {
-			await this.shell.exec(`git checkout ${branch}`)
-			await this.shell.exec(`git pull`)
-			await this.shell.exec(`git merge --ff-only ${cleanMergePoint}`)
-		} else {
-			await this.shell.exec(`git checkout -b ${branch} ${cleanMergePoint}`)
-		}
-		await this.shell.exec(`git push --set-upstream origin ${branch}`)
-	}
 }
 
 module.exports = BranchMaintainer
