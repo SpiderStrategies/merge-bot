@@ -203,7 +203,7 @@ tap.test('Phase 1a: Successful chain with branch cleanup', async t => {
 		gh: {
 			github: { context: { serverUrl: 'https://github.com', runId: 1, repo: { owner: 'test', repo: 'repo' } } },
 			async createIssue() { return { data: { number: 999, html_url: 'http://example.com' } } },
-			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' } } }] } }
+			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' }, message: 'Test commit' } }] } }
 		},
 		git: gitHelper
 	})
@@ -325,7 +325,7 @@ tap.test('Phase 1b: Multi-step chain (merges through release, then conflicts at 
 		gh: {
 			github: { context: { serverUrl: 'https://github.com', runId: 1, repo: { owner: 'test', repo: 'repo' } } },
 			async createIssue() { return { data: { number: 69517, html_url: 'http://example.com' } } },
-			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' } } }] } }
+			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' }, message: 'Test commit' } }] } }
 		},
 		git: gitHelper
 	})
@@ -422,7 +422,7 @@ tap.test('Phase 2: Conflict detection at main', async t => {
 		gh: {
 			github: { context: { serverUrl: 'https://github.com', runId: 1, repo: { owner: 'test', repo: 'repo' } } },
 			async createIssue() { return { data: { number: 999, html_url: 'http://example.com' } } },
-			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' } } }] } }
+			async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' }, message: 'Test commit' } }] } }
 		},
 		git: gitHelper
 	})
@@ -524,7 +524,7 @@ tap.test('Phase 3: Conflict isolation (Scenario Beta)', async t => {
 			gh: {
 				github: { context: { serverUrl: 'https://github.com', runId: 1, repo: { owner: 'test', repo: 'repo' } } },
 				async createIssue() { return { data: { number: 999, html_url: 'http://example.com' } } },
-				async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' } } }] } }
+				async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' }, message: 'Test commit' } }] } }
 			},
 			git: gitHelper
 		})
@@ -583,7 +583,7 @@ tap.test('Phase 3: Conflict isolation (Scenario Beta)', async t => {
 			gh: {
 				github: { context: { serverUrl: 'https://github.com', runId: 1, repo: { owner: 'test', repo: 'repo' } } },
 				async createIssue() { return { data: { number: 999, html_url: 'http://example.com' } } },
-				async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' } } }] } }
+				async fetchCommits() { return { data: [{ commit: { author: { name: 'Test', email: 'test@test.com' }, message: 'Test commit' } }] } }
 			},
 			git: gitHelper
 		})
@@ -766,7 +766,7 @@ tap.test('Resume chain: continues merge chain after conflict resolution', async 
 		gh: {
 			github: { context: { serverUrl: 'https://github.com', runId: 2, repo: { owner: 'test', repo: 'repo' } } },
 			async createIssue() { return { data: { number: 999, html_url: 'http://example.com' } } },
-			async fetchCommits() { return { data: [{ commit: { author: { name: 'Dev', email: 'dev@test.com' } } }] } }
+			async fetchCommits() { return { data: [{ commit: { author: { name: 'Dev', email: 'dev@test.com' }, message: 'Test commit' } }] } }
 		},
 		git: gitHelper
 	})
@@ -893,13 +893,16 @@ tap.test('Terminal branch (main) is updated when merge-forward chain completes',
 					repo: { owner: 'test', repo: 'repo' }
 				}
 			},
-			async fetchCommits() {
-				return {
-					data: [{
-						commit: { author: { name: 'Dev', email: 'dev@test.com' } }
-					}]
-				}
+		async fetchCommits() {
+			return {
+				data: [{
+					commit: {
+						author: { name: 'Dev', email: 'dev@test.com' },
+						message: 'Test commit'
+					}
+				}]
 			}
+		}
 		},
 		git: gitHelper
 	})

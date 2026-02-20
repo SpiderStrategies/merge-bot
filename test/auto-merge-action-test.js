@@ -281,6 +281,69 @@ tap.test('executeMerges', async t => {
 			'should not update main (terminal branch)')
 	})
 
+	t.test('closes conflict issues after successful chain completion', async t => {
+		// Issue #25: When a conflict resolution PR merges and the bot
+		// resumes the chain, it should close the conflict issue referenced
+		// in the PR's commit messages (e.g., "Fixes #70345").
+		const closedIssues = []
+		const core = mockCore({})
+		core.startGroup = () => {}
+		core.endGroup = () => {}
+
+		const shell = createMockShell(core, (cmd) => {
+			if (cmd.startsWith('gh issue close')) {
+				closedIssues.push(cmd.split(' ')[3])
+			}
+			return ''
+		})
+
+		const git = createMockGit(shell)
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async fetchCommits() {
+				return {
+					data: [
+						{
+							commit: {
+								message: 'Merge 262e2e9 Fixes #70345'
+							}
+						}
+					]
+				}
+			}
+		}
+
+		class TestAction extends TestAutoMerger {
+			async merge({ branch }) {
+				return true
+			}
+			async updateTargetBranches() {}
+		}
+
+		const action = new TestAction({
+			prNumber: 70358,
+			prBranch: 'merge-conflicts-70345-pr-70340-release-5.7.2-to-release-5.8.0',
+			core,
+			git,
+			shell,
+			gh: mockGh
+		})
+
+		await action.executeMerges(['main'])
+
+		t.same(
+			closedIssues, ['70345'],
+			'should close conflict issue after chain completes'
+		)
+	})
+
 	t.test('stops merging on first conflict', async t => {
 		const gitCalls = []
 		const core = mockCore({})
@@ -769,7 +832,14 @@ tap.test('handleConflicts', async t => {
 				}
 			},
 			async fetchCommits() {
-				return { data: [{ commit: { author: { name: 'Test Dev', email: 'dev@example.com' } } }] }
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test Dev', email: 'dev@example.com' },
+							message: 'Test commit'
+						}
+					}]
+				}
 			}
 		}
 

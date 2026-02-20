@@ -200,6 +200,17 @@ class AutoMerger {
 			this.core.info('All merges are complete')
 			await this.updateTargetBranches(mergedBranches)
 			await this.git.deleteBranch(this.prBranch)
+
+			// Issue #25 - Close any conflict issues referenced in the
+			// PR's commit messages (e.g., "Fixes #70345"). GitHub won't
+			// auto-close these because the PR merged into a merge-forward
+			// branch, not the default branch.
+			await new IssueResolver({
+				prNumber: this.prNumber,
+				core: this.core,
+				shell: this.shell,
+				gh: this.gh
+			}).resolveIssues()
 		} else if (this.conflictBranch) {
 			this.generateMergeConflictNotice()
 		}
