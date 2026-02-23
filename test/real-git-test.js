@@ -1735,3 +1735,161 @@ tap.test('branch names with periods work without normalization (issue #14)', asy
 	t.notOk(branchesAfter.includes('merge-forward-pr-999-release-5.8.0'),
 		'merge-forward branch should be cleaned up')
 })
+
+tap.test('Issue #27: AutoMerger resumes chain when conflict resolution PR merges to merge-forward branch', async t => {
+	// Reproduces the bug from issue #27 where a conflict resolution PR
+	// merged into merge-forward-pr-70412-release-5.8.0, but the bot
+	// returned early instead of continuing the chain to main.
+	//
+	// Root cause: configReader returns empty mergeTargets when baseBranch
+	// is a merge-forward branch name. initializeState() derives
+	// terminalBranch from mergeTargets[last], which is undefined for an
+	// empty array. The early return check `!this.terminalBranch` fires,
+	// preventing the merge-forward-specific logic in runMerges() from
+	// ever executing.
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: release-5.7.2 -> release-5.8.0 -> main
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	git('checkout -b release-5.7.2')
+	git('push origin release-5.7.2')
+
+	git('checkout -b release-5.8.0')
+	git('push origin release-5.8.0')
+	git('branch branch-here-release-5.8.0')
+	git('push origin branch-here-release-5.8.0')
+
+	git('checkout -b main')
+	git('push origin main')
+
+	// Simulate Action Run #1: merge-forward branch was created
+	// with the PR's content merged into it
+	git('checkout branch-here-release-5.8.0')
+	git('checkout -b merge-forward-pr-70412-release-5.8.0')
+	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
+	git('add test.txt')
+	git('commit -m "PR 70412 content"')
+	git('push origin merge-forward-pr-70412-release-5.8.0')
+
+	const mergeCommitSha = git('rev-parse HEAD')
+
+	const { Shell, Git } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.startsWith('gh ')) return ''
+		return execSync(cmd, {
+			cwd: repoDir,
+			encoding: 'utf-8'
+		}).trim()
+	}
+	const gitHelper = new Git(shell)
+	gitHelper.commit = async (message, author) => {
+		const authorStr = `${author.name} <${author.email}>`
+		const escapedMsg = message
+			.replace(/`/g, "'")
+			.replace(/"/g, '\\"')
+		return shell.exec(
+			`git commit -m "${escapedMsg}" ` +
+			`--author="${authorStr}"`)
+	}
+
+	const AutoMerger = require('../src/automerger')
+	let executeMergesCalled = false
+	let executedTargets = []
+
+	class TestAutoMerger extends AutoMerger {
+		async executeMerges(targets) {
+			executeMergesCalled = true
+			executedTargets = [...targets]
+			return true
+		}
+		async updateTargetBranches() {}
+	}
+
+	const action = new TestAutoMerger({
+		pullRequest: {
+			merged: true,
+			merge_commit_sha: mergeCommitSha,
+			head: {
+				sha: mergeCommitSha,
+				ref: 'merge-conflicts-70413-pr-70412-' +
+					'release-5.7.2-to-release-5.8.0'
+			},
+			base: {
+				ref: 'merge-forward-pr-70412-release-5.8.0'
+			}
+		},
+		repository: { owner: 'test', name: 'repo' },
+		config: {
+			branches: {
+				'release-5.7.2': {},
+				'release-5.8.0': {},
+				'main': {}
+			},
+			// merge-bot.js extracts 'release-5.8.0' from the
+			// merge-forward branch name before calling configReader,
+			// so mergeTargets is correctly populated.
+			mergeTargets: ['main'],
+			mergeOperations: {
+				'release-5.7.2': 'release-5.8.0',
+				'release-5.8.0': 'main'
+			}
+		},
+		prNumber: 70416,
+		prAuthor: 'Coletrane',
+		prTitle: '#70084 added logging',
+		prBranch: 'merge-conflicts-70413-pr-70412-' +
+			'release-5.7.2-to-release-5.8.0',
+		baseBranch: 'merge-forward-pr-70412-release-5.8.0',
+		prCommitSha: mergeCommitSha,
+		core,
+		shell,
+		gh: {
+			github: {
+				context: {
+					serverUrl: 'https://github.com',
+					runId: 22228635327,
+					repo: {
+						owner: 'SpiderStrategies',
+						repo: 'impact'
+					}
+				}
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							author: {
+								name: 'Cole',
+								email: 'cole@test.com'
+							},
+							message: '#70084 added logging'
+						}
+					}]
+				}
+			}
+		},
+		git: gitHelper
+	})
+
+	await action.run()
+
+	t.equal(action.terminalBranch, 'main',
+		'should derive terminalBranch from config.branches ' +
+		'when mergeTargets is empty')
+
+	t.ok(executeMergesCalled,
+		'should call executeMerges (not return early)')
+
+	t.same(executedTargets, ['main'],
+		'should resume chain targeting only main ' +
+		'(remaining after release-5.8.0)')
+})

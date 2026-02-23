@@ -124,11 +124,6 @@ class AutoMerger {
 	}
 
 	async runMerges() {
-		const username = 'Spider Merge Bot'
-		const userEmail = 'merge-bot@spiderstrategies.com'
-		this.core.info(`Assigning git identity to ${username} <${userEmail}>`)
-		await this.git.configureIdentity(username, userEmail)
-
 		// Determine which branches to merge into
 		let targets
 		if (this.isMergeForwardPR()) {

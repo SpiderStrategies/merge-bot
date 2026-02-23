@@ -3,6 +3,8 @@ const github = require('@actions/github')
 
 const AutoMerger = require('./automerger')
 const BranchMaintainer = require('./branch-maintainer')
+const { extractTargetFromMergeForward } = require('./branch-name-utils')
+const { MB_BRANCH_FORWARD_PREFIX } = require('./constants')
 const { configReader, Shell, GitHubClient, Git } = require('gh-action-components')
 
 const { pull_request, repository } = github.context.payload
@@ -11,13 +13,13 @@ const configFile = core.getInput('config-file', { required: true })
 const { number: prNumber, title, base, head, user } = pull_request
 
 async function run() {
-	// Read config once for both phases
-	const config = configReader(configFile, { baseBranch: base.ref })
-
-	// Create infrastructure components (shared across phases)
+	const config = readConfig()
 	const shell = new Shell(core)
 	const gh = new GitHubClient({ core, github })
 	const git = new Git(shell)
+
+	await git.configureIdentity(
+		'Spider Merge Bot', 'merge-bot@spiderstrategies.com')
 
 	// Phase 1: Merge forward
 	const automerger = new AutoMerger({
@@ -49,6 +51,24 @@ async function run() {
 	// Set final status based on automerge phase (orchestrator owns outputs)
 	setFinalStatus(automerger)
 }
+
+/**
+ * Reads the merge-bot config, resolving merge-forward branch names
+ * to their actual target branches. When a conflict resolution PR
+ * merges into a merge-forward branch, base.ref is the merge-forward
+ * name (e.g., merge-forward-pr-70412-release-5.8.0) which isn't in
+ * the config's mergeOperations. Extracting the real target branch
+ * ensures configReader builds correct mergeTargets.
+ *
+ * @returns {Configuration} The parsed config
+ */
+function readConfig() {
+	const baseBranch = base.ref.startsWith(MB_BRANCH_FORWARD_PREFIX)
+		? extractTargetFromMergeForward(base.ref)
+		: base.ref
+	return configReader(configFile, { baseBranch })
+}
+
 
 /**
  * Sets the final status outputs based on the automerge phase.
