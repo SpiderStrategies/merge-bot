@@ -67,6 +67,41 @@ tap.test(`initialize state`, async t => {
 	t.ok(coreMock.infoMsgs.some(msg => msg.includes('terminal branch')))
 })
 
+tap.test('Issue #27: merge-forward baseBranch gets correct mergeTargets from configReader', async t => {
+	// When a conflict resolution PR merges into a merge-forward branch,
+	// merge-bot.js extracts the real target branch before calling
+	// configReader. This means mergeTargets is correctly populated
+	// (e.g., ['main'] when baseBranch resolves to release-5.8.0),
+	// and initializeState/getRemainingMergeTargets work as normal.
+	const coreMock = mockCore({})
+	const action = new TestAutoMerger({
+		prNumber: 70416,
+		prCommitSha: 'abc123',
+		pullRequest: { merge_commit_sha: 'abc123' },
+		baseBranch: 'merge-forward-pr-70412-release-5.8.0',
+		config: {
+			branches: {
+				'release-5.7.2': {},
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeTargets: ['main']
+		},
+		core: coreMock
+	})
+
+	await action.initializeState()
+
+	t.equal(action.terminalBranch, 'main',
+		'terminalBranch should come from mergeTargets')
+
+	const targets =
+		action.getRemainingMergeTargets('release-5.8.0')
+
+	t.same(targets, ['main'],
+		'should return targets after release-5.8.0')
+})
+
 /**
  *
  */
@@ -500,6 +535,56 @@ tap.test('run', async t => {
 		await action.runMerges()
 
 		t.same(executedMerges, ['main'], 'should only merge to main, not re-merge into release-5.8.0')
+	})
+
+	t.test('Issue #27: run() resumes chain when baseBranch is a merge-forward branch', async t => {
+		// merge-bot.js extracts the real target branch from the
+		// merge-forward name before calling configReader, so
+		// mergeTargets is correctly populated. The automerger
+		// should detect the merge-forward PR and continue the chain.
+		const core = mockCore({})
+		const executedMerges = []
+
+		const shell = createMockShell(core)
+		const git = createMockGit(shell)
+
+		class TestAction extends TestAutoMerger {
+			async executeMerges(targets) {
+				executedMerges.push(...targets)
+				return true
+			}
+			async updateTargetBranches() {}
+		}
+
+		const action = new TestAction({
+			pullRequest: {
+				merged: true,
+				merge_commit_sha: 'abc123',
+				head: {
+					sha: 'abc123',
+					ref: 'merge-conflicts-70413-pr-70412-' +
+						'release-5.7.2-to-release-5.8.0'
+				}
+			},
+			baseBranch: 'merge-forward-pr-70412-release-5.8.0',
+			config: {
+				branches: {
+					'release-5.7.2': {},
+					'release-5.8.0': {},
+					'main': {}
+				},
+				mergeTargets: ['main']
+			},
+			core,
+			git,
+			shell
+		})
+
+		await action.run()
+
+		t.same(executedMerges, ['main'],
+			'should resume chain to main when baseBranch is ' +
+			'a merge-forward branch')
 	})
 })
 
