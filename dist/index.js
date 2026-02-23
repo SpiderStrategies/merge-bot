@@ -36469,11 +36469,6 @@ class AutoMerger {
 	}
 
 	async runMerges() {
-		const username = 'Spider Merge Bot'
-		const userEmail = 'merge-bot@spiderstrategies.com'
-		this.core.info(`Assigning git identity to ${username} <${userEmail}>`)
-		await this.git.configureIdentity(username, userEmail)
-
 		// Determine which branches to merge into
 		let targets
 		if (this.isMergeForwardPR()) {
@@ -39289,6 +39284,8 @@ const github = __nccwpck_require__(3228)
 
 const AutoMerger = __nccwpck_require__(1324)
 const BranchMaintainer = __nccwpck_require__(3816)
+const { extractTargetFromMergeForward } = __nccwpck_require__(9005)
+const { MB_BRANCH_FORWARD_PREFIX } = __nccwpck_require__(9992)
 const { configReader, Shell, GitHubClient, Git } = __nccwpck_require__(8863)
 
 const { pull_request, repository } = github.context.payload
@@ -39297,13 +39294,13 @@ const configFile = core.getInput('config-file', { required: true })
 const { number: prNumber, title, base, head, user } = pull_request
 
 async function run() {
-	// Read config once for both phases
-	const config = configReader(configFile, { baseBranch: base.ref })
-
-	// Create infrastructure components (shared across phases)
+	const config = readConfig()
 	const shell = new Shell(core)
 	const gh = new GitHubClient({ core, github })
 	const git = new Git(shell)
+
+	await git.configureIdentity(
+		'Spider Merge Bot', 'merge-bot@spiderstrategies.com')
 
 	// Phase 1: Merge forward
 	const automerger = new AutoMerger({
@@ -39335,6 +39332,24 @@ async function run() {
 	// Set final status based on automerge phase (orchestrator owns outputs)
 	setFinalStatus(automerger)
 }
+
+/**
+ * Reads the merge-bot config, resolving merge-forward branch names
+ * to their actual target branches. When a conflict resolution PR
+ * merges into a merge-forward branch, base.ref is the merge-forward
+ * name (e.g., merge-forward-pr-70412-release-5.8.0) which isn't in
+ * the config's mergeOperations. Extracting the real target branch
+ * ensures configReader builds correct mergeTargets.
+ *
+ * @returns {Configuration} The parsed config
+ */
+function readConfig() {
+	const baseBranch = base.ref.startsWith(MB_BRANCH_FORWARD_PREFIX)
+		? extractTargetFromMergeForward(base.ref)
+		: base.ref
+	return configReader(configFile, { baseBranch })
+}
+
 
 /**
  * Sets the final status outputs based on the automerge phase.
