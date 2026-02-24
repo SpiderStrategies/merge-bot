@@ -248,13 +248,15 @@ function createTestEnvironment({
 	config
 }) {
 	const coreInfoMessages = []
+	const outputs = {}
 	const testState = {
 		automergeRan: false,
 		cleanupMergeConflictsBranchCalled: false,
 		terminalBranch: undefined,
 		conflictBranch: undefined,
 		config,
-		coreInfoMessages
+		coreInfoMessages,
+		outputs
 	}
 
 	// Setup github context
@@ -277,7 +279,9 @@ function createTestEnvironment({
 
 	// Setup core stubs
 	core.info = (msg) => coreInfoMessages.push(msg)
-	core.setOutput = () => {}
+	core.error = (msg) => coreInfoMessages.push(msg)
+	core.setOutput = (name, value) => { outputs[name] = value }
+	core.setFailed = (msg) => { testState.failedMessage = msg }
 	core.getInput = () => '.github/workflows/config.yml'
 
 	return testState
@@ -291,6 +295,9 @@ function createMergeBotTestActions(testState) {
 	class MergeBotTestAutoMerger extends TestAutoMerger {
 		async run() {
 			testState.automergeRan = true
+			if (testState.automergeError) {
+				throw testState.automergeError
+			}
 			this.terminalBranch = testState.terminalBranch
 			this.conflictBranch = testState.conflictBranch
 		}
