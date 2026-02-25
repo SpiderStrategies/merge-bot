@@ -166,7 +166,7 @@ ISSUE_NUMBERS=$(gh issue list --label "merge conflict" --state open --json numbe
 if [[ -n "$ISSUE_NUMBERS" ]]; then
   for issue in $ISSUE_NUMBERS; do
     log_info "  Closing issue #$issue"
-    gh issue close "$issue" --comment "Manually reset merge state." || log_warn "  Failed to close issue #$issue"
+    gh issue close "$issue" --comment "Fixed using https://github.com/SpiderStrategies/merge-bot/blob/main/manual-merge.sh" || log_warn "  Failed to close issue #$issue"
   done
 else
   log_info "  No open merge conflict issues to close."
