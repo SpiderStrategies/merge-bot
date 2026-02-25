@@ -13,15 +13,44 @@ const configFile = core.getInput('config-file', { required: true })
 const { number: prNumber, title, base, head, user } = pull_request
 
 async function run() {
-	const config = readConfig()
-	const shell = new Shell(core)
-	const gh = new GitHubClient({ core, github })
-	const git = new Git(shell)
+	const { serverUrl, runId, repo } = github.context
+	const actionUrl =
+		`${serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${runId}`
 
-	await git.configureIdentity(
-		'Spider Merge Bot', 'merge-bot@spiderstrategies.com')
+	try {
+		const config = readConfig()
+		const shell = new Shell(core)
+		const gh = new GitHubClient({ core, github })
+		const git = new Git(shell)
 
-	// Phase 1: Merge forward
+		await git.configureIdentity('Spider Merge Bot',
+			'merge-bot@spiderstrategies.com')
+
+		const automerger = await automerge({ config, shell, gh, git })
+		await maintainBranches({ config, shell, automerger })
+		setFinalStatus(automerger)
+	} catch (error) {
+		// Issue #29 - Ensure Slack gets notified on crashes.
+		// Without this, setFinalStatus is never called and
+		// the Slack step gets empty outputs.
+		let statusMessage =
+			`Merge bot error: ${error.message} <${actionUrl}|Action Run>`
+		core.setFailed(error.message)
+		core.setOutput('status', 'error')
+		core.setOutput('status-message', statusMessage)
+	}
+}
+
+/**
+ * Merges the PR forward through the release branch chain.
+ * Returns the AutoMerger instance so the caller can check
+ * conflictBranch (for branch maintenance) and statusMessage
+ * (for Slack notification).
+ *
+ * @param {Object} deps - Infrastructure dependencies
+ * @returns {Promise<AutoMerger>} The automerger after execution
+ */
+async function automerge({ config, shell, gh, git }) {
 	const automerger = new AutoMerger({
 		pullRequest: pull_request,
 		repository,
@@ -38,18 +67,27 @@ async function run() {
 		git
 	})
 	await automerger.run()
+	return automerger
+}
 
-	// Phase 2: Maintain branch-here pointers
+/**
+ * Updates branch-here pointers and cleans up merge-forward
+ * branches after the automerge phase completes.
+ *
+ * @param {Object} deps - Infrastructure dependencies plus
+ *   the automerger result from the previous phase
+ */
+async function maintainBranches({ config, shell, automerger }) {
 	const maintainer = new BranchMaintainer({
 		pullRequest: pull_request,
 		config,
 		core,
 		shell
 	})
-	await maintainer.run({ automergeConflictBranch: automerger.conflictBranch })
-
-	// Set final status based on automerge phase (orchestrator owns outputs)
-	setFinalStatus(automerger)
+	await maintainer.run({
+		automergeConflictBranch:
+			automerger.conflictBranch
+	})
 }
 
 /**

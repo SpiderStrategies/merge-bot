@@ -67,6 +67,37 @@ tap.test('maintainBranchHerePointers', async t => {
 		}
 	})
 
+	t.test('sets error outputs when automerge throws', async t => {
+		const testState = createTestEnvironment({
+			baseBranch: 'release-5.6.0',
+			config: {
+				...baseConfig,
+				mergeTargets: ['release-5.7.0', 'main']
+			}
+		})
+		testState.automergeError = new Error(
+			'git merge failed')
+
+		const restore = useTestActions(testState)
+
+		try {
+			await runMergeBot()
+
+			t.equal(testState.outputs.status, 'error')
+			t.match(
+				testState.outputs['status-message'],
+				/git merge failed/)
+			t.match(
+				testState.outputs['status-message'],
+				/Action Run/)
+			t.match(
+				testState.failedMessage,
+				/git merge failed/)
+		} finally {
+			restore()
+		}
+	})
+
 	t.test('cleans up merge-conflicts branch when conflicts PR merged to terminal branch', async t => {
 		const testState = createTestEnvironment({
 			baseBranch: 'main',
