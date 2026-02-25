@@ -3,7 +3,10 @@ const { writeFile } = require('fs/promises')
 const { findIssueNumber } = require('gh-action-components')
 const IssueResolver = require('./issue-resolver')
 const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
-const { extractPRFromMergeForward, extractTargetFromMergeForward } = require('./branch-name-utils')
+const {
+	extractOriginalPRNumber,
+	extractTargetFromMergeForward
+} = require('./branch-name-utils')
 
 /**
  * Handles automatic merging of pull requests forward through the release chain.
@@ -103,6 +106,21 @@ class AutoMerger {
 	 */
 	isMergeForwardPR() {
 		return this.baseBranch.startsWith(MB_BRANCH_FORWARD_PREFIX)
+	}
+
+	/**
+	 * The PR number that originated this merge chain.
+	 * For conflict resolution PRs this is the original PR
+	 * (extracted from branch names), not the current PR.
+	 * Keeps all merge-forward branches under one PR number
+	 * so cleanup finds them all.
+	 */
+	get originalPRNumber() {
+		return extractOriginalPRNumber({
+			baseRef: this.baseBranch,
+			headRef: this.pullRequest.head?.ref,
+			prNumber: this.prNumber
+		})
 	}
 
 	/**
@@ -224,10 +242,8 @@ class AutoMerger {
 	 *   (unused, kept for compatibility)
 	 */
 	async updateTargetBranches(mergedBranches) {
-		const prNumber = this.isMergeForwardPR()
-			? extractPRFromMergeForward(this.baseBranch)
-			: this.prNumber
-		const branchNames = await this.findMergeForwardBranches(prNumber)
+		const branchNames =
+			await this.findMergeForwardBranches(this.originalPRNumber)
 
 		if (branchNames.length === 0) {
 			this.core.info('No merge-forward branches found')
@@ -407,21 +423,24 @@ class AutoMerger {
 	}
 
 	/**
-	 * Creates a merge-conflicts branch name that encodes the PR, source, and target branches
-	 * Format: merge-conflicts-{issueNumber}-pr-{prNumber}-{sourceBranch}-to-{targetBranch}
-	 * Example: merge-conflicts-68586-pr-123-release-5.8.0-to-main
+	 * Creates a merge-conflicts branch name that encodes the
+	 * original PR number, source, and target branches so
+	 * BranchMaintainer can trace back to the original PR's
+	 * merge-forward branches for cleanup.
 	 */
 	createMergeConflictsBranchName(issueNumber, sourceBranch, targetBranch) {
-		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-pr-${this.prNumber}-${sourceBranch}-to-${targetBranch}`
+		return `${MB_BRANCH_FAILED_PREFIX}${issueNumber}-pr-${this.originalPRNumber}-${sourceBranch}-to-${targetBranch}`
 	}
 
 	/**
-	 * Creates a merge-forward branch name for tracking this PR's isolated merge chain
-	 * Format: merge-forward-pr-{prNumber}-{targetBranch}
-	 * Example: merge-forward-pr-123-release-5.8.0
+	 * Creates a merge-forward branch name for tracking this
+	 * PR's isolated merge chain. Uses originalPRNumber so
+	 * conflict resolution PRs reuse the original PR number,
+	 * keeping the entire chain's merge-forward branches
+	 * discoverable under one PR number.
 	 */
 	createMergeForwardBranchName(targetBranch) {
-		return `${MB_BRANCH_FORWARD_PREFIX}${this.prNumber}-${targetBranch}`
+		return `${MB_BRANCH_FORWARD_PREFIX}${this.originalPRNumber}-${targetBranch}`
 	}
 
 	/**

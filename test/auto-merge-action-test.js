@@ -1373,6 +1373,54 @@ tap.test('Scenario Beta: Two PRs with conflicts at same point are isolated', asy
 	})
 })
 
+tap.test('originalPRNumber propagates original PR through conflict resolution chain', async t => {
+	// When PR #70452 merges into release-5.7.2 and conflicts at
+	// release-5.8.0, a conflict resolution PR #70465 merges into
+	// merge-forward-pr-70452-release-5.8.0. The merge-forward
+	// branches for the NEXT step (main) should still use #70452
+	// so cleanup finds them all under one PR number.
+
+	t.test('returns prNumber for normal PR', async t => {
+		const action = new TestAutoMerger({
+			prNumber: 70452,
+			baseBranch: 'release-5.7.2'
+		})
+		t.equal(action.originalPRNumber, 70452)
+	})
+
+	t.test('returns original PR from merge-forward base', async t => {
+		const action = new TestAutoMerger({
+			prNumber: 70465,
+			baseBranch: 'merge-forward-pr-70452-release-5.8.0'
+		})
+		t.equal(action.originalPRNumber, '70452')
+	})
+
+	t.test('merge-forward uses original PR number', async t => {
+		const action = new TestAutoMerger({
+			prNumber: 70465,
+			baseBranch: 'merge-forward-pr-70452-release-5.8.0'
+		})
+		const branch =
+			action.createMergeForwardBranchName('main')
+		t.equal(branch, 'merge-forward-pr-70452-main',
+			'should use original PR, not conflict resolution PR')
+	})
+
+	t.test('merge-conflicts uses original PR number', async t => {
+		const action = new TestAutoMerger({
+			prNumber: 70465,
+			baseBranch: 'merge-forward-pr-70452-release-5.8.0'
+		})
+		const branch = action.createMergeConflictsBranchName(
+			70468, 'release-5.8.0', 'main')
+		t.equal(branch,
+			'merge-conflicts-70468-pr-70452' +
+			'-release-5.8.0-to-main',
+			'should use original PR, not conflict resolution PR')
+	})
+})
+
 tap.test('merge', async t => {
 	t.test('handles already merged case', async t => {
 		const gitCalls = []
