@@ -14,6 +14,11 @@ set -e
 
 CONFIG_FILE=".spider-merge-bot-config.json"
 
+# Always read config from main so branch checkouts during execution don't pick up stale versions
+config_json() {
+  git show "origin/main:$CONFIG_FILE"
+}
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -54,7 +59,7 @@ log_info "Fetching all branches..."
 git fetch --all --prune
 
 # Parse merge operations from config (jq preserves key order)
-MERGE_OPS=$(jq -r '.mergeOperations | to_entries[] | "\(.key) \(.value)"' "$CONFIG_FILE")
+MERGE_OPS=$(config_json | jq -r '.mergeOperations | to_entries[] | "\(.key) \(.value)"')
 
 # Step 1: Merge forward
 log_info "Starting merge forward operations..."
@@ -99,7 +104,7 @@ done <<< "$MERGE_OPS"
 log_info "Updating branch-here pointers..."
 
 # Get all release branches (keys from mergeOperations, excluding those that map to main)
-RELEASE_BRANCHES=$(jq -r '.mergeOperations | keys[]' "$CONFIG_FILE")
+RELEASE_BRANCHES=$(config_json | jq -r '.mergeOperations | keys[]')
 
 while IFS= read -r release_branch; do
   branch_here="branch-here-$release_branch"
