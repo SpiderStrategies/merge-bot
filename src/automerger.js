@@ -118,7 +118,7 @@ class AutoMerger {
 	get originalPRNumber() {
 		return extractOriginalPRNumber({
 			baseRef: this.baseBranch,
-			headRef: this.pullRequest.head?.ref,
+			headRef: this.pullRequest?.head?.ref,
 			prNumber: this.prNumber
 		})
 	}
