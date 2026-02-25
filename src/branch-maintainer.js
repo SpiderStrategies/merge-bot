@@ -1,6 +1,6 @@
 const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX } = require('./constants')
 const {
-	extractPRFromMergeConflicts,
+	extractOriginalPRNumber,
 	extractPRFromMergeForward,
 	extractTargetFromMergeForward
 } = require('./branch-name-utils')
@@ -100,21 +100,16 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Determines the original PR number for merge-forward cleanup.
-	 * Extracts from merge-conflicts branch name, or falls back to current PR number.
-	 */
-	determineOriginalPRNumber() {
-		const headRef = this.pullRequest.head?.ref ?? ''
-		const prNumber = extractPRFromMergeConflicts(headRef)
-		return prNumber ?? this.pullRequest.number
-	}
-
-	/**
 	 * Cleans up all merge-forward branches for this PR's merge chain.
-	 * Uses determineOriginalPRNumber() to handle resolution PRs correctly.
+	 * Uses extractOriginalPRNumber to trace back through conflict
+	 * resolution chains to the original PR.
 	 */
 	async cleanupMergeForwardBranches() {
-		const prNumber = this.determineOriginalPRNumber()
+		const prNumber = extractOriginalPRNumber({
+			baseRef: this.pullRequest.base?.ref,
+			headRef: this.pullRequest.head?.ref,
+			prNumber: this.pullRequest.number
+		})
 		if (prNumber) {
 			await this.cleanupMergeForwardBranchesForPR(prNumber)
 		}

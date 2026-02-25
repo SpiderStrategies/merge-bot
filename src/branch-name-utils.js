@@ -61,8 +61,27 @@ function extractTargetFromMergeForward(branchName) {
 	return branchName.replace(new RegExp(`^${MB_BRANCH_FORWARD_PREFIX}\\d+-`), '')
 }
 
+/**
+ * Determines the original PR number that started this merge
+ * chain. Checks the base ref for a merge-forward branch name,
+ * then the head ref for a merge-conflicts branch name, and
+ * falls back to the PR's own number.
+ *
+ * @param {Object} options
+ * @param {string} options.baseRef - The PR's base branch name
+ * @param {string} options.headRef - The PR's head branch name
+ * @param {number|string} options.prNumber - The PR's own number
+ * @returns {string|number} The original PR number
+ */
+function extractOriginalPRNumber({ baseRef, headRef, prNumber }) {
+	return extractPRFromMergeForward(baseRef ?? '')
+		?? extractPRFromMergeConflicts(headRef ?? '')
+		?? prNumber
+}
+
 module.exports = {
 	extractPRFromMergeForward,
 	extractPRFromMergeConflicts,
-	extractTargetFromMergeForward
+	extractTargetFromMergeForward,
+	extractOriginalPRNumber
 }
