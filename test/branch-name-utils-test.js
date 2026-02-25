@@ -94,7 +94,7 @@ tap.test('extractOriginalPRNumber', async t => {
 			async t => {
 		t.equal(extractOriginalPRNumber({
 			baseRef: 'merge-forward-pr-100-main',
-			headRef: 'merge-conflicts-200-pr-100' +
+			headRef: 'merge-conflicts-200-pr-999' +
 				'-release-5.8.0-to-main',
 			prNumber: 999
 		}), '100')
