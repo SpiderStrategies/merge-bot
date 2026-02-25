@@ -90,8 +90,8 @@ while IFS=' ' read -r source target; do
     fi
   fi
 
-  # Push if there are unpushed commits
-  if ! git diff --quiet HEAD "origin/$target" 2>/dev/null; then
+  # Push if there are unpushed commits (compare SHAs, not file trees)
+  if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$target")" ]; then
     git push origin "$target"
     log_info "  Pushed successfully."
   else
