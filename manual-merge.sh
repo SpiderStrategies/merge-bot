@@ -53,10 +53,47 @@ fi
 log_info "Fetching all branches..."
 git fetch --all --prune
 
-# Parse merge operations from config (jq preserves key order)
-MERGE_OPS=$(jq -r '.mergeOperations | to_entries[] | "\(.key) \(.value)"' "$CONFIG_FILE")
+# Always read config from origin/main — it's the authoritative, most up-to-date version.
+# Reading from the working tree is unreliable because older branches may not yet have
+# the latest merge chain entries.
+CONFIG_JSON=$(git show "origin/main:$CONFIG_FILE")
 
-# Step 1: Merge forward
+# Parse merge operations from config (jq preserves key order)
+MERGE_OPS=$(echo "$CONFIG_JSON" | jq -r '.mergeOperations | to_entries[] | "\(.key) \(.value)"')
+
+# Get all release branches (keys from mergeOperations — these are the
+# source/left-hand side of each merge pair)
+RELEASE_BRANCHES=$(echo "$CONFIG_JSON" | jq -r '.mergeOperations | keys[]')
+
+# Get all branches involved in merge operations (both sources and targets),
+# deduplicated. Used in Step 1 to flush any locally-resolved commits before merging.
+ALL_MERGE_BRANCHES=$(echo "$CONFIG_JSON" | jq -r '.mergeOperations | to_entries[] | (.key, .value)' | sort -u)
+
+# Step 1: Push any branches that are ahead of origin.
+# Do this before merging forward so that origin reflects any locally-resolved
+# commits from a previous interrupted run, ensuring origin/$source is up to date
+# when used as the merge source below.
+log_info "Pushing any unpushed branches..."
+while IFS= read -r branch; do
+  if git show-ref --verify --quiet "refs/heads/$branch" && \
+     git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    local_sha=$(git rev-parse "$branch")
+    origin_sha=$(git rev-parse "origin/$branch")
+    if [[ "$local_sha" != "$origin_sha" ]]; then
+      # Only push if local is ahead of origin; if behind, skip to avoid rejection
+      if git merge-base --is-ancestor "$origin_sha" "$local_sha"; then
+        log_info "  Pushing $branch..."
+        git checkout "$branch"
+        git push origin "$branch"
+        log_info "  Pushed successfully."
+      else
+        log_warn "  $branch is behind or diverged from origin — skipping push. Manual intervention may be needed."
+      fi
+    fi
+  fi
+done <<< "$ALL_MERGE_BRANCHES"
+
+# Step 2: Merge forward
 log_info "Starting merge forward operations..."
 
 while IFS=' ' read -r source target; do
@@ -86,7 +123,7 @@ while IFS=' ' read -r source target; do
   fi
 
   # Push if there are unpushed commits
-  if ! git diff --quiet HEAD "origin/$target" 2>/dev/null; then
+  if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$target")" ]]; then
     git push origin "$target"
     log_info "  Pushed successfully."
   else
@@ -95,11 +132,8 @@ while IFS=' ' read -r source target; do
 
 done <<< "$MERGE_OPS"
 
-# Step 2: Update branch-here pointers (fast-forward)
+# Step 3: Update branch-here pointers (fast-forward)
 log_info "Updating branch-here pointers..."
-
-# Get all release branches (keys from mergeOperations, excluding those that map to main)
-RELEASE_BRANCHES=$(jq -r '.mergeOperations | keys[]' "$CONFIG_FILE")
 
 while IFS= read -r release_branch; do
   branch_here="branch-here-$release_branch"
@@ -128,7 +162,7 @@ while IFS= read -r release_branch; do
 
 done <<< "$RELEASE_BRANCHES"
 
-# Step 3: Cleanup
+# Step 4: Cleanup
 log_info "Starting cleanup..."
 
 # Delete merge-forward branches
