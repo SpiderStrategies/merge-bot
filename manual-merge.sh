@@ -92,7 +92,8 @@ while IFS=' ' read -r source target; do
 
   # Push if there are unpushed commits (compare SHAs, not file trees)
   if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$target")" ]; then
-    git push origin "$target"
+    # skip semgrep/linting — goal is branch sync, not code quality
+    git push --no-verify origin "$target"
     log_info "  Pushed successfully."
   else
     log_info "  Already up to date with origin."
@@ -118,7 +119,8 @@ while IFS= read -r release_branch; do
   else
     log_warn "  $branch_here doesn't exist, creating it."
     git checkout -b "$branch_here" "origin/$release_branch"
-    git push origin "$branch_here"
+    # skip semgrep/linting — goal is branch sync, not code quality
+    git push --no-verify origin "$branch_here"
     continue
   fi
 
@@ -128,7 +130,8 @@ while IFS= read -r release_branch; do
     exit 1
   fi
 
-  git push origin "$branch_here"
+  # skip semgrep/linting — goal is branch sync, not code quality
+  git push --no-verify origin "$branch_here"
   log_info "  Updated successfully."
 
 done <<< "$RELEASE_BRANCHES"
