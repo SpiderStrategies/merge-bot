@@ -320,7 +320,11 @@ tap.test('advanceBranchHereFromMergeForward', async t => {
 			'with PR number in message')
 	})
 
-	t.test('skips terminal branch', async t => {
+	t.test('skips branch-here for terminal branch but merges into it', async t => {
+		// Issue #43: When BranchMaintainer processes merge-forward-pr-{N}-main,
+		// it should skip branch-here advancement (no branch-here-main exists)
+		// but still merge the merge-forward content into main.
+		// Without this, resolved conflicts at the last hop never reach main.
 		const execCalls = []
 		const core = mockCore({})
 
@@ -348,8 +352,28 @@ tap.test('advanceBranchHereFromMergeForward', async t => {
 		await maintainer.advanceBranchHereFromMergeForward(
 			'merge-forward-pr-70168-main')
 
-		t.equal(execCalls.length, 0,
-			'should not execute any commands for terminal branch')
+		// Should NOT touch branch-here-main (doesn't exist)
+		const branchHereCmds = execCalls.filter(c =>
+			c.includes('branch-here-main'))
+		t.equal(branchHereCmds.length, 0,
+			'should not touch branch-here for terminal branch')
+
+		// SHOULD fast-forward main to match the merge-forward branch
+		const checkoutMain = execCalls.find(c =>
+			c.includes('git checkout main'))
+		t.ok(checkoutMain,
+			'should checkout main to fast-forward it')
+
+		const mergeCmd = execCalls.find(c =>
+			c.includes('git merge') &&
+			c.includes('merge-forward-pr-70168-main'))
+		t.ok(mergeCmd,
+			'should merge merge-forward branch into main')
+
+		const pushMain = execCalls.find(c =>
+			c.includes('git push') && c.includes('main'))
+		t.ok(pushMain,
+			'should push updated main')
 	})
 })
 
