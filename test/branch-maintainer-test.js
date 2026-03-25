@@ -358,11 +358,11 @@ tap.test('advanceBranchHereFromMergeForward', async t => {
 		t.equal(branchHereCmds.length, 0,
 			'should not touch branch-here for terminal branch')
 
-		// SHOULD fast-forward main to match the merge-forward branch
+		// SHOULD merge the merge-forward branch into main
 		const checkoutMain = execCalls.find(c =>
 			c.includes('git checkout main'))
 		t.ok(checkoutMain,
-			'should checkout main to fast-forward it')
+			'should checkout main to merge into it')
 
 		const mergeCmd = execCalls.find(c =>
 			c.includes('git merge') &&
