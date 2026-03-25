@@ -37072,9 +37072,13 @@ class BranchMaintainer {
 		const targetBranch =
 			extractTargetFromMergeForward(mergeForwardBranch)
 
-		// Skip terminal branch (no branch-here for main)
+		// Issue #43 - Terminal branch has no branch-here pointer,
+		// but still needs to be fast-forwarded to include the
+		// merge-forward content. Without this, resolved conflicts
+		// at the last hop never reach main.
 		if (targetBranch === this.terminalBranch) {
-			return
+			return this.fastForwardTerminalBranch(
+				mergeForwardBranch, targetBranch)
 		}
 
 		const prNumber = extractPRFromMergeForward(mergeForwardBranch)
@@ -37100,6 +37104,30 @@ class BranchMaintainer {
 			`git merge ${branchHere} --no-ff ` +
 			`-m "Merge #${prNumber} from ${branchHere}` +
 			` to ${targetBranch}"`)
+		await this.shell.exec(`git push origin ${targetBranch}`)
+	}
+
+	/**
+	 * Merges a merge-forward branch into the terminal branch.
+	 *
+	 * In the happy path (no conflicts), AutoMerger.updateTargetBranch
+	 * handles this. But when conflicts occur at the terminal branch,
+	 * the automerger exits early and this method fills the gap.
+	 *
+	 * Always creates a merge commit rather than attempting fast-forward,
+	 * because other PRs may have merged into main while the developer
+	 * was resolving conflicts (making fast-forward impossible).
+	 */
+	async fastForwardTerminalBranch(mergeForwardBranch, targetBranch) {
+		this.core.info(
+			`Updating ${targetBranch} from ${mergeForwardBranch}`)
+
+		await this.shell.exec(`git checkout ${targetBranch}`)
+		await this.shell.exec(`git pull`)
+		await this.shell.exec(
+			`git merge origin/${mergeForwardBranch} --no-ff ` +
+			`-m "Merge ${mergeForwardBranch} into ` +
+			`${targetBranch}"`)
 		await this.shell.exec(`git push origin ${targetBranch}`)
 	}
 
