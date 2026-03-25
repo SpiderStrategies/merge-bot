@@ -37073,11 +37073,10 @@ class BranchMaintainer {
 			extractTargetFromMergeForward(mergeForwardBranch)
 
 		// Issue #43 - Terminal branch has no branch-here pointer,
-		// but still needs to be fast-forwarded to include the
-		// merge-forward content. Without this, resolved conflicts
-		// at the last hop never reach main.
+		// but still needs the merge-forward content. Without this,
+		// resolved conflicts at the last hop never reach main.
 		if (targetBranch === this.terminalBranch) {
-			return this.fastForwardTerminalBranch(
+			return this.mergeToTerminalBranch(
 				mergeForwardBranch, targetBranch)
 		}
 
@@ -37114,11 +37113,11 @@ class BranchMaintainer {
 	 * handles this. But when conflicts occur at the terminal branch,
 	 * the automerger exits early and this method fills the gap.
 	 *
-	 * Always creates a merge commit rather than attempting fast-forward,
-	 * because other PRs may have merged into main while the developer
-	 * was resolving conflicts (making fast-forward impossible).
+	 * Always creates a merge commit (--no-ff) because other PRs may
+	 * have merged into main while the developer was resolving
+	 * conflicts (making fast-forward impossible).
 	 */
-	async fastForwardTerminalBranch(mergeForwardBranch, targetBranch) {
+	async mergeToTerminalBranch(mergeForwardBranch, targetBranch) {
 		this.core.info(
 			`Updating ${targetBranch} from ${mergeForwardBranch}`)
 
