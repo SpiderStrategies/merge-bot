@@ -1736,7 +1736,7 @@ tap.test('branch names with periods work without normalization (issue #14)', asy
 		'merge-forward branch should be cleaned up')
 })
 
-tap.test('Issue #43: BranchMaintainer fast-forwards main after conflict resolution at terminal branch', async t => {
+tap.test('Issue #43: BranchMaintainer merges to main after conflict resolution at terminal branch', async t => {
 	// Reproduces the bug where resolved conflicts at the last hop never reach main.
 	//
 	// Scenario:
@@ -1746,7 +1746,7 @@ tap.test('Issue #43: BranchMaintainer fast-forwards main after conflict resoluti
 	// 4. BranchMaintainer cleanup runs (commitsReachedMain = true)
 	// 5. BUG: advanceBranchHereFromMergeForward skips terminal branch entirely
 	// 6. merge-forward-pr-{N}-main is deleted, main never updated
-	// 7. EXPECTED: main should be fast-forwarded to merge-forward-pr-{N}-main
+	// 7. EXPECTED: main should be updated with merge-forward-pr-{N}-main
 	const { repoDir, originDir, git } = await createTestRepo()
 
 	t.teardown(async () => {
