@@ -79,9 +79,24 @@ function extractOriginalPRNumber({ baseRef, headRef, prNumber }) {
 		?? prNumber
 }
 
+/**
+ * Extracts the source branch from a merge-conflicts branch name.
+ * Format: merge-conflicts-{issueNumber}-pr-{prNumber}-{source}-to-{target}
+ * Example: merge-conflicts-71392-pr-71347-release-5.8.0-to-main -> 'release-5.8.0'
+ *
+ * @param {string} branchName - The merge-conflicts branch name
+ * @returns {string|null} The source branch name, or null if not parseable
+ */
+function extractSourceFromMergeConflicts(branchName) {
+	const match = branchName.match(
+		/^merge-conflicts-\d+-pr-\d+-(.+)-to-(.+)$/)
+	return match ? match[1] : null
+}
+
 module.exports = {
 	extractPRFromMergeForward,
 	extractPRFromMergeConflicts,
 	extractTargetFromMergeForward,
+	extractSourceFromMergeConflicts,
 	extractOriginalPRNumber
 }
