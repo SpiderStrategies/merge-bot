@@ -3,6 +3,7 @@ const {
 	extractPRFromMergeForward,
 	extractPRFromMergeConflicts,
 	extractTargetFromMergeForward,
+	extractSourceFromMergeConflicts,
 	extractOriginalPRNumber
 } = require('../src/branch-name-utils')
 
@@ -47,6 +48,29 @@ tap.test('extractPRFromMergeConflicts', async t => {
 	t.test('returns null for merge-forward branch', async t => {
 		const result = extractPRFromMergeConflicts('merge-forward-pr-123-main')
 		t.equal(result, null)
+	})
+})
+
+tap.test('extractSourceFromMergeConflicts', async t => {
+	t.test('extracts source branch targeting main', async t => {
+		t.equal(extractSourceFromMergeConflicts(
+			'merge-conflicts-71392-pr-71347-release-5.8.0-to-main'),
+		'release-5.8.0')
+	})
+
+	t.test('extracts source branch targeting another release', async t => {
+		t.equal(extractSourceFromMergeConflicts(
+			'merge-conflicts-999-pr-456-release-5.7.2-to-release-5.8.0'),
+		'release-5.7.2')
+	})
+
+	t.test('returns null for non-merge-conflicts branch', async t => {
+		t.equal(extractSourceFromMergeConflicts('feature-branch'), null)
+	})
+
+	t.test('returns null for merge-forward branch', async t => {
+		t.equal(extractSourceFromMergeConflicts(
+			'merge-forward-pr-123-main'), null)
 	})
 })
 
