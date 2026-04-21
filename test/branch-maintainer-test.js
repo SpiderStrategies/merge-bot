@@ -130,7 +130,14 @@ tap.test('cleanupMergeForwardBranches', async t => {
 				base: { ref: 'release-5.7' },
 				merged: true
 			},
-			config: { branches: {}, mergeOperations: {} },
+			config: {
+				branches: {
+					'release-5.7': {},
+					'release-5.8': {},
+					'main': {}
+				},
+				mergeOperations: {}
+			},
 			core,
 			shell: mockShell
 		})
@@ -203,12 +210,15 @@ tap.test('run calls cleanup when commits reach main', async t => {
 	const maintainer = new TestBranchMaintainer({
 		pullRequest: {
 			number: 555,
-			head: { ref: 'feature-branch' },
+			head: { ref: 'feature-branch', sha: 'abc123' },
 			base: { ref: 'release-5.7' },
 			merged: true
 		},
 		config: {
-			branches: { main: {} },
+			branches: {
+				'release-5.7': {},
+				'main': {}
+			},
 			mergeOperations: {}
 		},
 		core,

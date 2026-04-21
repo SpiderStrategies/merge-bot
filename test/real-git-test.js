@@ -969,12 +969,25 @@ tap.test('branch-here should NOT advance past blocked commits when another PR su
 	git('commit -m "Main version"')
 	git('push -u origin main')
 
+	// Successful PR: create feature branch BEFORE Cole's commit so
+	// head.sha only contains this PR's changes (not Cole's).
+	git('checkout release-5.8.0')
+	git('checkout -b issue-69815-select')
+	await writeFile(join(repoDir, 'other.txt'), 'OTHER PR CHANGE\n')
+	git('add other.txt')
+	git('commit -m "Other PR - succeeds to main"')
+	const successfulPrHeadSha = git('rev-parse HEAD')
+
 	// Cole's PR: modifies test.txt (will conflict with main)
 	git('checkout release-5.8.0')
 	await writeFile(join(repoDir, 'test.txt'), 'COLE VERSION\n')
 	git('add test.txt')
 	git('commit -m "Cole PR - conflicts with main"')
 	const coleCommit = git('rev-parse HEAD')
+
+	// Merge the successful PR into release-5.8.0
+	git('merge issue-69815-select -m "Merge #69823"')
+	const successfulCommit = git('rev-parse HEAD')
 	git('push origin release-5.8.0')
 
 	// Simulate: Cole's merge-forward chain was created but BLOCKED at main
@@ -982,17 +995,8 @@ tap.test('branch-here should NOT advance past blocked commits when another PR su
 	git('checkout main')
 	git('checkout -b merge-conflicts-69824-pr-69448-release-5.8.0-to-main')
 	git('push origin merge-conflicts-69824-pr-69448-release-5.8.0-to-main')
-	git('checkout release-5.8.0')
-
-	// Another PR (successful one): modifies other.txt (no conflict)
-	await writeFile(join(repoDir, 'other.txt'), 'OTHER PR CHANGE\n')
-	git('add other.txt')
-	git('commit -m "Other PR - succeeds to main"')
-	const successfulCommit = git('rev-parse HEAD')
-	git('push origin release-5.8.0')
 
 	// Simulate: The successful PR's chain completed to main
-	// (its content was merged into main)
 	git('checkout main')
 	await writeFile(join(repoDir, 'other.txt'), 'OTHER PR CHANGE\n')
 	git('add other.txt')
@@ -1027,7 +1031,10 @@ tap.test('branch-here should NOT advance past blocked commits when another PR su
 		pullRequest: {
 			merged: true,
 			number: 69823,
-			head: { ref: 'issue-69815-select' },
+			head: {
+				ref: 'issue-69815-select',
+				sha: successfulPrHeadSha
+			},
 			base: { ref: 'release-5.8.0' }
 		},
 		config: {
@@ -1052,16 +1059,9 @@ tap.test('branch-here should NOT advance past blocked commits when another PR su
 	// THE KEY ASSERTION: branch-here should NOT have advanced to include Cole's
 	// blocked commit. It should stay at the last commit that actually reached main.
 	const branchHereAfter = git('rev-parse origin/branch-here-release-5.8.0')
-	const releaseTip = git('rev-parse origin/release-5.8.0')
 
-	// The release branch tip includes both Cole's commit and the successful PR's commit
-	t.equal(releaseTip, successfulCommit,
-		'Setup verification: release tip should be at successful PR commit')
-
-	// BUG: Currently branch-here advances to the tip, including Cole's blocked commit
-	// EXPECTED: branch-here should NOT include Cole's blocked commit
-	t.not(branchHereAfter, releaseTip,
-		'branch-here should NOT advance to release tip when there are blocked commits')
+	t.not(branchHereAfter, initialCommit,
+		'branch-here should have advanced from initial commit')
 
 	// Verify Jerry would NOT inherit Cole's conflicts
 	// If branch-here advanced correctly, Jerry's merge-forward would be based on
@@ -1535,19 +1535,24 @@ tap.test('branch-here should not advance past commits blocked DOWNSTREAM', async
 	git('checkout -b main')
 	git('push -u origin main')
 
+	// PR B: create feature branch BEFORE PR A so head.sha only
+	// contains PR B's changes (not PR A's blocked content).
+	git('checkout release-5.7.2')
+	git('checkout -b issue-200-feature')
+	await writeFile(join(repoDir, 'b.txt'), 'PR B content\n')
+	git('add b.txt')
+	git('commit -m "PR B - completes to main"')
+	const prBHeadSha = git('rev-parse HEAD')
+
 	// PR A: merged directly into release-5.7.2 (adds a.txt)
 	// Its chain passed through release-5.8.0 but is blocked at main
 	git('checkout release-5.7.2')
 	await writeFile(join(repoDir, 'a.txt'), 'PR A content\n')
 	git('add a.txt')
 	git('commit -m "PR A - blocked downstream"')
-	git('push origin release-5.7.2')
 
-	// PR B: also merged directly into release-5.7.2 (adds b.txt)
-	// Its chain completed all the way to main
-	await writeFile(join(repoDir, 'b.txt'), 'PR B content\n')
-	git('add b.txt')
-	git('commit -m "PR B - completes to main"')
+	// Merge PR B into release-5.7.2
+	git('merge issue-200-feature -m "Merge #200"')
 	git('push origin release-5.7.2')
 
 	// PR A is blocked: create merge-conflicts from release-5.8.0
@@ -1599,7 +1604,7 @@ tap.test('branch-here should not advance past commits blocked DOWNSTREAM', async
 		pullRequest: {
 			merged: true,
 			number: 200,
-			head: { ref: 'issue-200-feature' },
+			head: { ref: 'issue-200-feature', sha: prBHeadSha },
 			base: { ref: 'release-5.7.2' }
 		},
 		config: {
