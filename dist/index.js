@@ -36956,13 +36956,15 @@ class BranchMaintainer {
 		// which branch the PR was merged into
 		await this.cleanupMergeConflictsBranch()
 
-		// Determine if commits reached the terminal branch
+		// Determine if commits reached the terminal branch. A
+		// merge-conflicts PR's merge implies the chain completed
+		// (AutoMerger ran first and drove remaining hops; if it
+		// had hit another conflict, automergeConflictBranch would
+		// be set).
 		const isTerminalBranch = this.pullRequest.base.ref === this.terminalBranch
 		const automergeSucceeded = !automergeConflictBranch
-		const commitsReachedMain = !isTerminalBranch && automergeSucceeded
-
-		// Also clean up if a merge-conflicts PR completed the chain by merging to terminal
-		const mergeConflictsPRCompleted = this.isMergeConflictsPR() && isTerminalBranch
+		const mergeConflictsPRCompleted = this.isMergeConflictsPR() && automergeSucceeded
+		const commitsReachedMain = !isTerminalBranch && automergeSucceeded && !mergeConflictsPRCompleted
 		const shouldCleanup = commitsReachedMain || mergeConflictsPRCompleted
 
 		if (shouldCleanup) {
@@ -36972,11 +36974,14 @@ class BranchMaintainer {
 			// #71406 - When merging from the last release branch into
 			// main, branch-here for that release branch is never
 			// advanced (main has no branch-here). Advance it here
-			// with the PR's head commit.
-			if (commitsReachedMain) {
-				await this.advanceBranchHereAfterReleaseMerge()
-			} else if (mergeConflictsPRCompleted) {
+			// with the PR's head commit. For merge-conflicts PRs
+			// the "release branch" must be recovered from the
+			// merge-conflicts branch name - base.ref is typically
+			// a merge-forward branch, not a release branch.
+			if (mergeConflictsPRCompleted) {
 				await this.advanceBranchHereAfterConflictResolution()
+			} else if (commitsReachedMain) {
+				await this.advanceBranchHereAfterReleaseMerge()
 			}
 		} else if (isTerminalBranch) {
 			this.core.info(`Skipping branch maintenance: PR was against terminal branch, no merge chain traversed`)
