@@ -9,14 +9,12 @@ for external use. It is maintained by Spider Strategies for internal workflows.
 
 ## Documentation
 
-For detailed documentation, see [`.cursor/rules/global.mdc`](.cursor/rules/global.mdc) which includes:
+For detailed documentation, see [`docs/architecture.md`](docs/architecture.md) which includes:
 
 - Key concepts (branch-here, merge-forward, merge-conflicts branches)
 - Design rationale and alternatives considered
 - Developer conflict resolution workflow
 - Configuration and usage
-
-This file is automatically available to Cursor AI for context.
 
 ## Quick Reference
 
