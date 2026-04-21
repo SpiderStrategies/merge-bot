@@ -1820,7 +1820,13 @@ tap.test('Issue #43: BranchMaintainer merges to main after conflict resolution a
 		pullRequest: {
 			merged: true,
 			number: 71200,
-			head: { ref: 'merge-conflicts-71196-pr-71156-release-5.8.0-to-main' },
+			head: {
+				ref: 'merge-conflicts-71196-pr-71156-release-5.8.0-to-main',
+				// Real PRs always have a head SHA. Omitting it masks
+				// bugs in advance-branch-here paths that early-return
+				// on missing SHAs.
+				sha: 'resolution-pr-head-sha'
+			},
 			base: { ref: 'merge-forward-pr-71156-main' }
 		},
 		config: {
@@ -2096,6 +2102,157 @@ tap.test('#71406: branch-here advances for base branch after conflict resolution
 		'branch-here-release-5.8.0 should have advanced from initial commit')
 
 	// Verify the feature file is in branch-here
+	const branchHereFiles = git(
+		`ls-tree --name-only ${branchHereAfter}`)
+	t.ok(branchHereFiles.includes('feature.txt'),
+		'branch-here should include the PR\'s feature file')
+
+	// Verify branch-here is an ancestor of release-5.8.0 (issue #19)
+	let isAncestor
+	try {
+		git('merge-base --is-ancestor ' +
+			'origin/branch-here-release-5.8.0 origin/release-5.8.0')
+		isAncestor = true
+	} catch (e) {
+		isAncestor = false
+	}
+	t.ok(isAncestor,
+		'branch-here should remain an ancestor of release-5.8.0')
+})
+
+tap.test('#71406: branch-here advances for base branch when conflict resolution PR targets merge-forward-*-main', async t => {
+	// Real-world variant of the conflict-at-terminal case: the bot
+	// instructs developers to open their resolution PR against the
+	// merge-forward branch (see automerger.js writeComment), NOT main.
+	// So after the resolution PR merges:
+	//   base.ref = merge-forward-pr-N-main
+	//   head.ref = merge-conflicts-K-pr-N-release-5.8.0-to-main
+	//
+	// Because base.ref is the merge-forward branch (not main),
+	// isTerminalBranch is false and mergeConflictsPRCompleted is
+	// false. We fall through to the commitsReachedMain path, but
+	// advanceBranchHereAfterReleaseMerge uses base.ref directly,
+	// which is wrong here (it's not a release branch), and
+	// cleanupMergeForwardBranches never advances branch-here
+	// because no merge-forward-pr-N-release-5.8.0 was ever created
+	// (release-5.8.0 was the PR's base, not a merge target).
+	//
+	// EXPECTED: branch-here-release-5.8.0 still advances to include
+	// the original PR's commits.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: release-5.8.0 -> main with divergent content
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+	const initialCommit = git('rev-parse HEAD')
+
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	git('checkout release-5.8.0')
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'shared.txt'), 'MAIN VERSION\n')
+	git('add shared.txt')
+	git('commit -m "Main baseline"')
+	git('push -u origin main')
+
+	// Simulate: Original PR #71347 was merged directly into release-5.8.0
+	// (the last release branch). It touches shared.txt in a way that will
+	// conflict with main's version.
+	git('checkout release-5.8.0')
+	await writeFile(join(repoDir, 'feature.txt'), 'New feature\n')
+	await writeFile(join(repoDir, 'shared.txt'), 'RELEASE VERSION\n')
+	git('add .')
+	git('commit -m "PR 71347 feature"')
+	const originalPrHeadSha = git('rev-parse HEAD')
+	git('push origin release-5.8.0')
+
+	// Simulate: AutoMerger created merge-forward-pr-71347-main from main.
+	// The merge conflicted, so this branch is just a pointer at main.
+	// Critically, no merge-forward-pr-71347-release-5.8.0 was ever created
+	// because release-5.8.0 was the PR's base, not a merge target.
+	git('checkout main')
+	git('checkout -b merge-forward-pr-71347-main')
+	git('push -u origin merge-forward-pr-71347-main')
+
+	// Simulate: Developer resolved the conflict and merged their PR into
+	// merge-forward-pr-71347-main (as the bot's issue body instructs).
+	git('checkout merge-forward-pr-71347-main')
+	await writeFile(join(repoDir, 'feature.txt'), 'New feature\n')
+	await writeFile(join(repoDir, 'shared.txt'), 'RESOLVED\n')
+	git('add .')
+	git('commit -m "Merge PR 71347 resolved conflicts"')
+	git('push origin merge-forward-pr-71347-main')
+
+	const branchHereBefore = git('rev-parse origin/branch-here-release-5.8.0')
+	t.equal(branchHereBefore, initialCommit,
+		'Setup: branch-here should be at initial commit')
+
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		// Mock gh CLI to return the original PR's head SHA
+		if (cmd.includes('gh pr view')) {
+			return originalPrHeadSha
+		}
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// Conflict-resolution path: merge-conflicts PR merged into the
+	// merge-forward branch (NOT into main directly). This is what the
+	// bot actually tells developers to do.
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 71397,
+			head: {
+				ref: 'merge-conflicts-71392-pr-71347-release-5.8.0-to-main',
+				sha: 'irrelevant-conflict-resolution-sha'
+			},
+			base: { ref: 'merge-forward-pr-71347-main' }
+		},
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.8.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	git('fetch origin')
+
+	// KEY ASSERTION: branch-here-release-5.8.0 should have been advanced
+	const branchHereAfter = git('rev-parse origin/branch-here-release-5.8.0')
+	t.not(branchHereAfter, initialCommit,
+		'branch-here-release-5.8.0 should have advanced from initial commit')
+
+	// Verify the original PR's feature file is in branch-here
 	const branchHereFiles = git(
 		`ls-tree --name-only ${branchHereAfter}`)
 	t.ok(branchHereFiles.includes('feature.txt'),
