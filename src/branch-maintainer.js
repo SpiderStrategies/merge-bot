@@ -216,7 +216,10 @@ class BranchMaintainer {
 
 		const mergeRef = this.pullRequest.head?.sha
 		if (!mergeRef) {
-			return
+			throw new Error(
+				`Cannot advance branch-here for` +
+				` '${releaseBranch}': PR is missing` +
+				` head SHA`)
 		}
 
 		await this.advanceBranchHere({
@@ -237,8 +240,12 @@ class BranchMaintainer {
 		const headRef = this.pullRequest.head?.ref ?? ''
 		const releaseBranch =
 			extractSourceFromMergeConflicts(headRef)
-		if (!releaseBranch ||
-				releaseBranch === this.terminalBranch) {
+		if (!releaseBranch) {
+			throw new Error(
+				`Cannot parse source branch from` +
+				` merge-conflicts ref '${headRef}'`)
+		}
+		if (releaseBranch === this.terminalBranch) {
 			return
 		}
 
@@ -262,7 +269,10 @@ class BranchMaintainer {
 			return
 		}
 		if (!mergeRef) {
-			return
+			throw new Error(
+				`Cannot advance branch-here for` +
+				` '${releaseBranch}': gh pr view` +
+				` #${prNumber} returned no head SHA`)
 		}
 
 		await this.advanceBranchHere({
@@ -280,6 +290,12 @@ class BranchMaintainer {
 	 * causing them to diverge.
 	 */
 	async advanceBranchHere({ releaseBranch, mergeRef, prNumber }) {
+		if (!(releaseBranch in this.config.branches)) {
+			throw new Error(
+				`Cannot advance branch-here: '${releaseBranch}'` +
+				` is not a configured branch (PR #${prNumber})`)
+		}
+
 		const branchHere = MB_BRANCH_HERE_PREFIX + releaseBranch
 		this.core.info(
 			`Advancing ${branchHere} with PR #${prNumber}`)
