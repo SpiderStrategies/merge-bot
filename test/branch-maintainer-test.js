@@ -387,3 +387,61 @@ tap.test('advanceBranchHereFromMergeForward', async t => {
 	})
 })
 
+tap.test('run skips maintenance when base is not a configured branch', async t => {
+	// #72734 - When a PR is merged into a non-configured base
+	// (e.g. a feature branch, like PR #72699 was merged into
+	// `72162-geographic-...`), BranchMaintainer used to crash
+	// trying to advance `branch-here-<feature-branch>`. It
+	// should no-op gracefully instead.
+	const execCalls = []
+	const core = mockCore({})
+	const infoMessages = []
+	core.info = (msg) => infoMessages.push(msg)
+
+	const mockShell = {
+		core,
+		async exec(cmd) { execCalls.push(cmd); return '' },
+		async execQuietly(cmd) { execCalls.push(cmd); return '' }
+	}
+
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			number: 72699,
+			head: {
+				ref: '72598-missing-variablespunctuation-in' +
+					'-error-messages-in-stack-traces-for' +
+					'-dataset-field',
+				sha: 'abc123'
+			},
+			base: {
+				ref: '72162-geographic-dataset-link-field' +
+					'-never-has-data-show-up-in-the-records-tab'
+			},
+			merged: true
+		},
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'main': {}
+			},
+			mergeOperations: {}
+		},
+		core,
+		shell: mockShell
+	})
+
+	await maintainer.run({ automergeConflictBranch: null })
+
+	const advanceCmds = execCalls.filter(c =>
+		c.includes('branch-here-') || c.includes('git checkout') ||
+		c.includes('git merge') || c.includes('git push origin '))
+	t.equal(advanceCmds.length, 0,
+		'should not attempt any branch-here advancement ' +
+		'or release-branch merges')
+
+	const skipped = infoMessages.find(m =>
+		m.includes('not a configured branch'))
+	t.ok(skipped,
+		'should log a skip message mentioning the ' +
+		'non-configured base')
+})

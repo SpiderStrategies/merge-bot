@@ -54,6 +54,23 @@ class BranchMaintainer {
 		// which branch the PR was merged into
 		await this.cleanupMergeConflictsBranch()
 
+		// #72734 - The workflow fires for every closed PR, but
+		// branch-here maintenance only makes sense when the base is
+		// a configured release branch or a merge-forward branch
+		// (the legitimate conflict-resolution target). Without this
+		// guard, a PR merged into a stray feature branch crashes
+		// the maintainer trying to advance `branch-here-<feature>`.
+		const baseRef = this.pullRequest.base.ref
+		const isConfiguredBase = baseRef in this.config.branches
+		const isMergeForwardBase =
+			baseRef.startsWith(MB_BRANCH_FORWARD_PREFIX)
+		if (!isConfiguredBase && !isMergeForwardBase) {
+			this.core.info(
+				`Skipping branch maintenance: base '${baseRef}'` +
+				` is not a configured branch`)
+			return
+		}
+
 		// Determine if commits reached the terminal branch. A
 		// merge-conflicts PR's merge implies the chain completed
 		// (AutoMerger ran first and drove remaining hops; if it
