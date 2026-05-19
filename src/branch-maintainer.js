@@ -31,14 +31,10 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Main entry point - handles all branch maintenance responsibilities:
+	 * Main entry point - orchestrates branch maintenance:
 	 * 1. Delete merge-conflicts branches when conflict PRs are merged
-	 * 2. Maintain branch-here pointers (only if commits reached main)
-	 *
-	 * CRITICAL: Only maintains branch-here when commits have merged ALL THE WAY to main.
-	 * This ensures branch-here branches only include commits that have successfully
-	 * merged through the entire release chain, preventing users from inheriting
-	 * conflicts from earlier in the chain.
+	 * 2. Skip the rest when the base isn't a configured branch
+	 * 3. Maintain branch-here pointers (only if commits reached main)
 	 *
 	 * @param {Object} options
 	 * @param {string} [options.automergeConflictBranch] - The branch where automerge
@@ -71,6 +67,23 @@ class BranchMaintainer {
 			return
 		}
 
+		await this.maintainBranchHere({ automergeConflictBranch })
+	}
+
+	/**
+	 * Cleans up merge-forward branches and advances branch-here
+	 * pointers when commits successfully reached the terminal branch.
+	 *
+	 * CRITICAL: Only advances branch-here when commits have merged ALL THE
+	 * WAY to main. This ensures branch-here branches only include commits
+	 * that have successfully merged through the entire release chain,
+	 * preventing users from inheriting conflicts from earlier in the chain.
+	 *
+	 * @param {Object} options
+	 * @param {string} [options.automergeConflictBranch] - The branch where
+	 *   automerge encountered conflicts (undefined if automerge succeeded)
+	 */
+	async maintainBranchHere({ automergeConflictBranch }) {
 		// Determine if commits reached the terminal branch. A
 		// merge-conflicts PR's merge implies the chain completed
 		// (AutoMerger ran first and drove remaining hops; if it
