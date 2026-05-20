@@ -379,6 +379,72 @@ tap.test('executeMerges', async t => {
 		)
 	})
 
+	t.test('IssueResolver failure does not abort executeMerges', async t => {
+		// #72756 - When `gh issue close` fails (e.g. transient
+		// GraphQL error), the exception was propagating out of
+		// AutoMerger and preventing BranchMaintainer from running.
+		// IssueResolver is best-effort cleanup — failures here must
+		// not abort the rest of the merge bot's work.
+		const core = mockCore({})
+		core.startGroup = () => {}
+		core.endGroup = () => {}
+
+		const shell = createMockShell(core, (cmd) => {
+			if (cmd.startsWith('gh issue close')) {
+				throw new Error(
+					'Command failed: gh issue close 71892\n' +
+					'GraphQL: Could not close the issue. (closeIssue)')
+			}
+			return ''
+		})
+
+		const git = createMockGit(shell)
+
+		const mockGh = {
+			github: {
+				context: {
+					serverUrl,
+					runId,
+					repo: { owner: 'sample', repo: 'repo' }
+				}
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							message: 'fixes #71892 remaining test fixes' +
+								' related to H2 upgrade'
+						}
+					}]
+				}
+			}
+		}
+
+		class TestAction extends TestAutoMerger {
+			async merge({ branch }) {
+				return true
+			}
+			async updateTargetBranches() {}
+		}
+
+		const action = new TestAction({
+			prNumber: 71943,
+			prBranch: 'issue-71892-fix-more-h2-upgrade-tests',
+			core,
+			git,
+			shell,
+			gh: mockGh
+		})
+
+		const result = await action.executeMerges(['main'])
+
+		t.equal(result, true,
+			'executeMerges should still report success when ' +
+			'IssueResolver throws')
+		t.notOk(core.failedArg,
+			'should not call setFailed when only IssueResolver throws')
+	})
+
 	t.test('stops merging on first conflict', async t => {
 		const gitCalls = []
 		const core = mockCore({})
