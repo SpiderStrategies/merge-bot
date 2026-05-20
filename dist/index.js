@@ -36933,14 +36933,10 @@ class BranchMaintainer {
 	}
 
 	/**
-	 * Main entry point - handles all branch maintenance responsibilities:
+	 * Main entry point - orchestrates branch maintenance:
 	 * 1. Delete merge-conflicts branches when conflict PRs are merged
-	 * 2. Maintain branch-here pointers (only if commits reached main)
-	 *
-	 * CRITICAL: Only maintains branch-here when commits have merged ALL THE WAY to main.
-	 * This ensures branch-here branches only include commits that have successfully
-	 * merged through the entire release chain, preventing users from inheriting
-	 * conflicts from earlier in the chain.
+	 * 2. Skip the rest when the base isn't a configured branch
+	 * 3. Maintain branch-here pointers (only if commits reached main)
 	 *
 	 * @param {Object} options
 	 * @param {string} [options.automergeConflictBranch] - The branch where automerge
@@ -36956,6 +36952,40 @@ class BranchMaintainer {
 		// which branch the PR was merged into
 		await this.cleanupMergeConflictsBranch()
 
+		// #72734 - The workflow fires for every closed PR, but
+		// branch-here maintenance only makes sense when the base is
+		// a configured release branch or a merge-forward branch
+		// (the legitimate conflict-resolution target). Without this
+		// guard, a PR merged into a stray feature branch crashes
+		// the maintainer trying to advance `branch-here-<feature>`.
+		const baseRef = this.pullRequest.base.ref
+		const isConfiguredBase = baseRef in this.config.branches
+		const isMergeForwardBase =
+			baseRef.startsWith(MB_BRANCH_FORWARD_PREFIX)
+		if (!isConfiguredBase && !isMergeForwardBase) {
+			this.core.info(
+				`Skipping branch maintenance: base '${baseRef}'` +
+				` is not a configured branch`)
+			return
+		}
+
+		await this.maintainBranchHere({ automergeConflictBranch })
+	}
+
+	/**
+	 * Cleans up merge-forward branches and advances branch-here
+	 * pointers when commits successfully reached the terminal branch.
+	 *
+	 * CRITICAL: Only advances branch-here when commits have merged ALL THE
+	 * WAY to main. This ensures branch-here branches only include commits
+	 * that have successfully merged through the entire release chain,
+	 * preventing users from inheriting conflicts from earlier in the chain.
+	 *
+	 * @param {Object} options
+	 * @param {string} [options.automergeConflictBranch] - The branch where
+	 *   automerge encountered conflicts (undefined if automerge succeeded)
+	 */
+	async maintainBranchHere({ automergeConflictBranch }) {
 		// Determine if commits reached the terminal branch. A
 		// merge-conflicts PR's merge implies the chain completed
 		// (AutoMerger ran first and drove remaining hops; if it
