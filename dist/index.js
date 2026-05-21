@@ -36558,21 +36558,38 @@ class AutoMerger {
 			this.core.info('All merges are complete')
 			await this.updateTargetBranches(mergedBranches)
 			await this.git.deleteBranch(this.prBranch)
+			await this.resolveReferencedIssues()
+		} else if (this.conflictBranch) {
+			this.generateMergeConflictNotice()
+		}
+		return allMergesPassed
+	}
 
-			// Issue #25 - Close any conflict issues referenced in the
-			// PR's commit messages (e.g., "Fixes #70345"). GitHub won't
-			// auto-close these because the PR merged into a merge-forward
-			// branch, not the default branch.
+	/**
+	 * Closes any issues referenced with closing keywords in the PR's
+	 * commit messages (e.g. "Fixes #70345"). GitHub won't auto-close
+	 * these because the PR merged into a merge-forward branch, not
+	 * the default branch (issue #25).
+	 *
+	 * #72756 - This is best-effort cleanup. If closing an issue fails
+	 * (transient GraphQL error, the issue is already closed, etc.) we
+	 * log the failure but don't rethrow. Letting this throw used to
+	 * abort the workflow before BranchMaintainer could run, leaving
+	 * branch-here pointers stranded and merge-forward branches orphaned.
+	 */
+	async resolveReferencedIssues() {
+		try {
 			await new IssueResolver({
 				prNumber: this.prNumber,
 				core: this.core,
 				shell: this.shell,
 				gh: this.gh
 			}).resolveIssues()
-		} else if (this.conflictBranch) {
-			this.generateMergeConflictNotice()
+		} catch (e) {
+			this.core.warning(
+				`IssueResolver failed (continuing anyway so` +
+				` branch maintenance still runs): ${e.message}`)
 		}
-		return allMergesPassed
 	}
 
 	/**
