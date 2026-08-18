@@ -249,6 +249,7 @@ function createTestEnvironment({
 }) {
 	const coreInfoMessages = []
 	const outputs = {}
+	const shellCommands = []
 	const testState = {
 		automergeRan: false,
 		cleanupMergeConflictsBranchCalled: false,
@@ -256,7 +257,8 @@ function createTestEnvironment({
 		conflictBranch: undefined,
 		config,
 		coreInfoMessages,
-		outputs
+		outputs,
+		shellCommands
 	}
 
 	// Setup github context
@@ -300,6 +302,7 @@ function createMergeBotTestActions(testState) {
 			}
 			this.terminalBranch = testState.terminalBranch
 			this.conflictBranch = testState.conflictBranch
+			this.failureMessage = testState.automergeFailureMessage
 		}
 	}
 
@@ -352,8 +355,11 @@ function useTestActions(testState) {
 		constructor(core) {
 			this.core = core
 		}
-		async exec() { return '' }
-		async execQuietly() { return '' }
+		async exec(cmd) {
+			testState.shellCommands.push(cmd)
+			return ''
+		}
+		async execQuietly(cmd) { return this.exec(cmd) }
 	}
 
 	ghActionComponents.GitHubClient = class MockGitHubClient {

@@ -9,7 +9,7 @@ inputs:
     required: true
 outputs:
   status:
-    description: 'Status: success or error'
+    description: 'Status: success or failure'
   status-message:
     description: 'Detailed status message for Slack notifications'
 runs:

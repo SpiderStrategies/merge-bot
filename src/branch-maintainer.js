@@ -5,6 +5,7 @@ const {
 	extractSourceFromMergeConflicts,
 	extractTargetFromMergeForward
 } = require('./branch-name-utils')
+const pushWithRetry = require('./push-with-retry')
 
 /**
  * Maintains branch-here pointers by updating them to the latest commit that
@@ -318,6 +319,9 @@ class BranchMaintainer {
 	 * The ancestry merge is critical: without it, branch-here would
 	 * have a merge commit that doesn't exist on the release branch,
 	 * causing them to diverge.
+	 *
+	 * Both pushes go through pushWithRetry because a concurrent
+	 * merge-bot run can advance either branch while we work (#74377).
 	 */
 	async advanceBranchHere({ releaseBranch, mergeRef, prNumber }) {
 		if (!(releaseBranch in this.config.branches)) {
@@ -330,21 +334,25 @@ class BranchMaintainer {
 		this.core.info(
 			`Advancing ${branchHere} with PR #${prNumber}`)
 
-		await this.shell.exec(`git checkout ${branchHere}`)
-		await this.shell.exec(`git pull`)
-		await this.shell.exec(
-			`git merge ${mergeRef} --no-ff ` +
-			`-m "Merge #${prNumber} into ${branchHere}"`)
-		await this.shell.exec(`git push origin ${branchHere}`)
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: branchHere,
+			merge: () => this.shell.exec(
+				`git merge ${mergeRef} --no-ff ` +
+				`-m "Merge #${prNumber} into ${branchHere}"`)
+		})
 
 		// Issue #19 - Preserve ancestry
-		await this.shell.exec(`git checkout ${releaseBranch}`)
-		await this.shell.exec(`git pull`)
-		await this.shell.exec(
-			`git merge ${branchHere} --no-ff ` +
-			`-m "Merge #${prNumber} from ${branchHere}` +
-			` to ${releaseBranch}"`)
-		await this.shell.exec(`git push origin ${releaseBranch}`)
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: releaseBranch,
+			merge: () => this.shell.exec(
+				`git merge ${branchHere} --no-ff ` +
+				`-m "Merge #${prNumber} from ${branchHere}` +
+				` to ${releaseBranch}"`)
+		})
 	}
 
 	/**
@@ -362,13 +370,15 @@ class BranchMaintainer {
 		this.core.info(
 			`Updating ${targetBranch} from ${mergeForwardBranch}`)
 
-		await this.shell.exec(`git checkout ${targetBranch}`)
-		await this.shell.exec(`git pull`)
-		await this.shell.exec(
-			`git merge origin/${mergeForwardBranch} --no-ff ` +
-			`-m "Merge ${mergeForwardBranch} into ` +
-			`${targetBranch}"`)
-		await this.shell.exec(`git push origin ${targetBranch}`)
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: targetBranch,
+			merge: () => this.shell.exec(
+				`git merge origin/${mergeForwardBranch} --no-ff ` +
+				`-m "Merge ${mergeForwardBranch} into ` +
+				`${targetBranch}"`)
+		})
 	}
 
 }
