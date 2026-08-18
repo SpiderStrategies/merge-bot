@@ -2,6 +2,7 @@ const { writeFile } = require('fs/promises')
 
 const { findIssueNumber } = require('gh-action-components')
 const IssueResolver = require('./issue-resolver')
+const pushWithRetry = require('./push-with-retry')
 const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
 const {
 	extractOriginalPRNumber,
@@ -77,6 +78,7 @@ class AutoMerger {
 		this.statusMessage = null
 		this.lastSuccessfulMergeRef = null
 		this.lastSuccessfulBranch = null
+		this.failureMessage = null
 	}
 
 	async run() {
@@ -202,6 +204,9 @@ class AutoMerger {
 			} catch (e) {
 				this.core.error(e.message)
 				this.core.setFailed(e.message)
+				// #74377 - setFinalStatus reads this so a broken chain isn't
+				// reported as a success
+				this.failureMessage = e.message
 				break
 			} finally {
 				this.core.endGroup()
@@ -306,7 +311,6 @@ class AutoMerger {
 
 	/**
 	 * Updates a single target branch to match its merge-forward commit.
-	 * Attempts fast-forward first, falls back to merge commit if needed.
 	 *
 	 * @param {string} mergeForwardBranch - The merge-forward branch name
 	 *   (e.g., 'merge-forward-pr-123-release-5.8.0' or 'merge-forward-pr-123-main')
@@ -314,20 +318,48 @@ class AutoMerger {
 	 *   (e.g., 'release-5.8.0' or 'main')
 	 */
 	async updateTargetBranch(mergeForwardBranch, targetBranch) {
-		this.core.info(`Fast-forwarding ${targetBranch} to ${mergeForwardBranch}`)
-		await this.git.checkout(targetBranch)
+		this.core.info(`Updating ${targetBranch} from ${mergeForwardBranch}`)
 
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: targetBranch,
+			merge: () => this.applyMergeForward(mergeForwardBranch, targetBranch)
+		})
+	}
+
+	/**
+	 * Merges the commit at the tip of [mergeForwardBranch] into the currently
+	 * checked out [targetBranch].
+	 *
+	 * Fast-forwards when the merge-forward branch was built on the target's
+	 * current tip, and falls back to a merge commit when a concurrent
+	 * merge-bot run moved the target on in the meantime (#74377).
+	 *
+	 * @param {string} mergeForwardBranch - The merge-forward branch name
+	 * @param {string} targetBranch - The branch already checked out
+	 */
+	async applyMergeForward(mergeForwardBranch, targetBranch) {
 		const mergeForwardCommit = await this.shell.exec(`git rev-parse origin/${mergeForwardBranch}`)
 
 		try {
 			await this.git.merge(mergeForwardCommit, '--ff-only')
 			this.core.info(`Fast-forwarded ${targetBranch}`)
+			return
 		} catch (e) {
 			this.core.info(`Fast-forward failed, creating merge commit for ${targetBranch}`)
-			await this.git.merge(mergeForwardCommit, '--no-ff')
 		}
 
-		await this.git.push(`origin ${targetBranch}`)
+		try {
+			await this.git.merge(mergeForwardCommit, '--no-ff')
+		} catch (e) {
+			// Retrying can't help - the same conflict recurs - so leave a
+			// clean tree behind and let the failure surface.
+			await this.shell.execQuietly('git merge --abort')
+			throw new Error(
+				`Could not merge ${mergeForwardBranch} into` +
+				` ${targetBranch}: ${e.message}`)
+		}
 	}
 
 	/**
@@ -359,16 +391,20 @@ class AutoMerger {
 		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
 		options = '--no-commit --no-ff'
 	}) {
+		// #74377 - The runner's clone captured origin/* up to a minute ago and
+		// a concurrent run may have advanced the target since, so refresh
+		// before picking a base.
+		await this.shell.exec('git fetch origin')
+
 		// Create merge-forward based on the TARGET's branch-here, not the PR's progress.
 		// This ensures we merge FORWARD (few commits) not backward (thousands).
 		// The merge direction is: PR changes -> into -> target branch
 		const currentMergeForward = this.createMergeForwardBranchName(branch)
 		const targetRef = this.getBranchHereRef(branch)
-		await this.git.createBranch(currentMergeForward, `origin/${targetRef}`)
-		await this.git.push(`--force origin ${currentMergeForward}`)
-
-		// Switch to the merge-forward branch to perform the merge there
-		await this.git.checkout(currentMergeForward)
+		// #74377 - -B and --force so a re-run overwrites whatever a failed
+		// earlier attempt left behind, locally and on the remote.
+		await this.shell.exec(`git checkout -B ${currentMergeForward} origin/${targetRef}`)
+		await this.git.push(`--force --set-upstream origin ${currentMergeForward}`)
 
 		// Merge the PR's progress (lastSuccessfulMergeRef) INTO the target-based branch.
 		// This is the forward direction: few PR commits merged into the target.
@@ -379,7 +415,6 @@ class AutoMerger {
 
 		let mergeResult
 		try {
-			await this.git.pull() // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
 			mergeResult = await this.git.merge(this.lastSuccessfulMergeRef, options)
 			this.core.info(mergeResult)
 		} catch (e) {

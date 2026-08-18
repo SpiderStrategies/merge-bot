@@ -273,14 +273,19 @@ tap.test('executeMerges', async t => {
 		core.startGroup = () => {}
 		core.endGroup = () => {}
 
-		const shell = createMockShell(core, createGitShellBehavior({
+		const shellCalls = []
+		const gitShellBehavior = createGitShellBehavior({
 			mergeForwardBranches: {
 				'12345': [{ branch: 'release-5.8', sha: 'abc123' }]
 			},
 			revParse: {
 				'origin/merge-forward-pr-12345-release-5.8': 'commit-sha-release-5.8'
 			}
-		}))
+		})
+		const shell = createMockShell(core, (cmd) => {
+			shellCalls.push(cmd)
+			return gitShellBehavior(cmd)
+		})
 
 		const git = createMockGit(shell, { callTracker: gitCalls })
 
@@ -306,11 +311,15 @@ tap.test('executeMerges', async t => {
 		const result = await action.executeMerges(['release-5.8', 'main'])
 
 		t.equal(result, true, 'should return true when all merges succeed')
-		t.ok(gitCalls.filter(c => c === 'checkout:release-5.8').length >= 2,
-			'should checkout release-5.8 for merging AND for updating')
+		t.ok(gitCalls.includes('checkout:release-5.8'),
+			'should checkout release-5.8 to merge into it')
+		t.ok(shellCalls.includes('git checkout release-5.8'),
+			'should check release-5.8 out again to update it')
+		t.ok(shellCalls.includes('git fetch origin release-5.8'),
+			'should refresh release-5.8 before merging onto its tip')
 		t.ok(gitCalls.find(c => c.includes('merge:commit-sha-release-5.8:--ff-only')),
 			'should fast-forward release-5.8 to its merge-forward commit')
-		t.ok(gitCalls.find(c => c.includes('push:origin release-5.8')),
+		t.ok(shellCalls.includes('git push origin release-5.8'),
 			'should push updated release-5.8')
 		t.notOk(gitCalls.find(c => c.includes('merge:') && c.includes('main')),
 			'should not update main (terminal branch)')
@@ -508,7 +517,80 @@ tap.test('executeMerges', async t => {
 
 		t.equal(result, false, 'should return false when exception occurs')
 		t.ok(core.failedArg, 'should call setFailed when exception occurs')
+		// #74377 - setFinalStatus reads this to avoid reporting success
+		t.match(action.failureMessage, /Git merge failed/,
+			'should record why the chain broke')
 		t.equal(gitCalls.filter(c => c.startsWith('checkout')).length, 2, 'should stop after exception')
+	})
+})
+
+tap.test('applyMergeForward', async t => {
+
+	t.test('fast-forwards when the target has not moved', async t => {
+		const gitCalls = []
+		const core = mockCore({})
+		const shell = createMockShell(core, createGitShellBehavior({
+			revParse: { 'origin/merge-forward-pr-123-main': 'forwardCommit' }
+		}))
+		const git = createMockGit(shell, { callTracker: gitCalls })
+
+		const action = new TestAutoMerger({ core, git, shell })
+
+		await action.applyMergeForward('merge-forward-pr-123-main', 'main')
+
+		t.ok(gitCalls.includes('merge:forwardCommit:--ff-only'),
+			'should fast-forward')
+		t.notOk(gitCalls.find(c => c.includes('--no-ff')),
+			'should not create a merge commit when a fast-forward works')
+	})
+
+	t.test('falls back to a merge commit when a concurrent run moved the target', async t => {
+		const gitCalls = []
+		const core = mockCore({})
+		const shell = createMockShell(core, createGitShellBehavior({
+			revParse: { 'origin/merge-forward-pr-123-main': 'forwardCommit' }
+		}))
+		const git = createMockGit(shell, { callTracker: gitCalls })
+		git.merge = async (ref, options) => {
+			gitCalls.push(`merge:${ref}:${options}`)
+			if (options === '--ff-only') {
+				throw new Error('fatal: Not possible to fast-forward, aborting.')
+			}
+			return ''
+		}
+
+		const action = new TestAutoMerger({ core, git, shell })
+
+		await action.applyMergeForward('merge-forward-pr-123-main', 'main')
+
+		t.ok(gitCalls.includes('merge:forwardCommit:--no-ff'),
+			'should create a merge commit instead')
+	})
+
+	t.test('aborts and reports when the fallback merge conflicts', async t => {
+		// #74377 - Aborting rather than retrying, because the same conflict
+		// recurs on every attempt.
+		const shellCalls = []
+		const core = mockCore({})
+		const gitShellBehavior = createGitShellBehavior({
+			revParse: { 'origin/merge-forward-pr-123-main': 'forwardCommit' }
+		})
+		const shell = createMockShell(core, (cmd) => {
+			shellCalls.push(cmd)
+			return gitShellBehavior(cmd)
+		})
+		const git = createMockGit(shell)
+		git.merge = async () => { throw new Error('CONFLICT (content)') }
+
+		const action = new TestAutoMerger({ core, git, shell })
+
+		await t.rejects(
+			action.applyMergeForward('merge-forward-pr-123-main', 'main'),
+			/Could not merge merge-forward-pr-123-main into main: CONFLICT/,
+			'should name both branches and keep git\'s message')
+
+		t.ok(shellCalls.includes('git merge --abort'),
+			'should leave a clean tree behind')
 	})
 })
 
@@ -958,6 +1040,11 @@ tap.test('handleConflicts', async t => {
 			if (cmd === 'git rev-parse HEAD') {
 				return 'mergeCommit-' + Math.random().toString(36).substring(7)
 			}
+			const created = cmd.match(/^git checkout -B (\S+) /)
+			if (created) {
+				createdBranches.add(created[1])
+				branchCreationOrder.push(created[1])
+			}
 			return ''
 		})
 
@@ -965,13 +1052,6 @@ tap.test('handleConflicts', async t => {
 		git.merge = async (sha, options) => {
 			// All merges succeed
 			return 'Merge made by strategy'
-		}
-		git.createBranch = async (branchName, ref) => {
-			if (createdBranches.has(branchName)) {
-				throw new Error(`fatal: a branch named '${branchName}' already exists`)
-			}
-			createdBranches.add(branchName)
-			branchCreationOrder.push(branchName)
 		}
 
 		const mockGh = {
@@ -1490,9 +1570,13 @@ tap.test('originalPRNumber propagates original PR through conflict resolution ch
 tap.test('merge', async t => {
 	t.test('handles already merged case', async t => {
 		const gitCalls = []
+		const shellCalls = []
 		const core = mockCore({})
 
-		const shell = createMockShell(core)
+		const shell = createMockShell(core, (cmd) => {
+			shellCalls.push(cmd)
+			return ''
+		})
 		const git = createMockGit(shell, { callTracker: gitCalls })
 		// Override merge to return "Already up to date"
 		git.merge = async (sha, options) => {
@@ -1517,7 +1601,8 @@ tap.test('merge', async t => {
 		const result = await action.merge({branch: 'release-5.8'})
 
 		t.equal(result, true, 'should return true even when already merged')
-		t.ok(gitCalls.find(c => c.includes('pull')), 'should pull before merging')
+		t.ok(shellCalls.includes('git fetch origin'),
+			'should refresh remote-tracking refs before picking a base')
 		// Should merge lastSuccessfulMergeRef (PR's progress), not pullRequest.head.sha
 		t.ok(gitCalls.find(c => c.includes('merge:originalCommit')), 'should merge lastSuccessfulMergeRef (forward direction)')
 		// When already merged, no commit or branch creation should happen
@@ -1585,7 +1670,9 @@ tap.test('merge', async t => {
 		t.equal(result, true, 'should return true on success')
 		t.ok(commitCalled, 'should create commit when merge successful')
 		t.equal(action.lastSuccessfulMergeRef, 'newMergeCommit789', 'should update lastSuccessfulMergeRef to new merge commit')
-		t.ok(gitCommands.includes('createBranch'), 'should create merge-forward branch')
+		t.ok(shellCommands.includes(
+			'git checkout -B merge-forward-pr-789-release-5.8 origin/branch-here-release-5.8'),
+			'should create merge-forward branch from the target\'s branch-here')
 		t.ok(gitCommands.find(c => c.startsWith('push:')), 'should push merge-forward branch')
 	})
 

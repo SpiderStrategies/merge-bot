@@ -67,7 +67,9 @@ tap.test('maintainBranchHerePointers', async t => {
 		}
 	})
 
-	t.test('sets error outputs when automerge throws', async t => {
+	t.test('sets failure outputs when automerge throws', async t => {
+		// #74377 - 'failure' is what the workflow's notify_when matches;
+		// the old 'error' value matched nothing.
 		const testState = createTestEnvironment({
 			baseBranch: 'release-5.6.0',
 			config: {
@@ -83,7 +85,7 @@ tap.test('maintainBranchHerePointers', async t => {
 		try {
 			await runMergeBot()
 
-			t.equal(testState.outputs.status, 'error')
+			t.equal(testState.outputs.status, 'failure')
 			t.match(
 				testState.outputs['status-message'],
 				/git merge failed/)
@@ -93,6 +95,57 @@ tap.test('maintainBranchHerePointers', async t => {
 			t.match(
 				testState.failedMessage,
 				/git merge failed/)
+		} finally {
+			restore()
+		}
+	})
+
+	t.test('sets failure outputs when the merge chain breaks without throwing', async t => {
+		// #74377 - executeMerges catches its own exceptions, so this never
+		// reaches the crash handler tested above.
+		const testState = createTestEnvironment({
+			baseBranch: 'release-5.6.0',
+			config: {
+				...baseConfig,
+				mergeTargets: ['release-5.7.0', 'main']
+			}
+		})
+		testState.automergeFailureMessage =
+			'Command failed: git push --set-upstream origin' +
+			' merge-forward-pr-74333-main'
+
+		const restore = useTestActions(testState)
+
+		try {
+			await runMergeBot()
+
+			t.equal(testState.outputs.status, 'failure',
+				'should not stamp success over a broken chain')
+			t.match(
+				testState.outputs['status-message'],
+				/merge-forward-pr-74333-main/,
+				'should say what broke')
+		} finally {
+			restore()
+		}
+	})
+
+	t.test('registers the ours merge driver', async t => {
+		// #72975 - merge=ours in .gitattributes is a silent no-op unless the
+		// driver is registered in this clone.
+		const testState = createTestEnvironment({
+			baseBranch: 'release-5.7.0',
+			config: { ...baseConfig, mergeTargets: ['main'] }
+		})
+
+		const restore = useTestActions(testState)
+
+		try {
+			await runMergeBot()
+
+			t.ok(testState.shellCommands.includes(
+				'git config merge.ours.driver true'),
+				'should register the ours merge driver before merging')
 		} finally {
 			restore()
 		}

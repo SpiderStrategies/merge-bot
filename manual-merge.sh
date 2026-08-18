@@ -54,6 +54,13 @@ if ! command -v gh &> /dev/null; then
   exit 1
 fi
 
+# #72975 - Git requires the merge=ours driver in .gitattributes to be registered
+# per clone, or those attributes are a silent no-op and this script propagates
+# one branch's generated AI config up the chain. Repo-local so a recovery script
+# doesn't rewrite your global git config.
+log_info "Registering the 'ours' merge driver for this repo..."
+git config merge.ours.driver true
+
 # Step 1: Fetch all branches
 log_info "Fetching all branches..."
 git fetch --all --prune

@@ -26,6 +26,12 @@ async function run() {
 		await git.configureIdentity('Spider Merge Bot',
 			'merge-bot@spiderstrategies.com')
 
+		// #72975 - git requires the merge=ours driver in .gitattributes to be
+		// registered per clone, or those attributes are a silent no-op.
+		// #74377 - Here rather than in the workflow, so release branches whose
+		// workflow file predates the rename to merge-bot.yml are covered too.
+		await shell.exec('git config merge.ours.driver true')
+
 		const automerger = await automerge({ config, shell, gh, git })
 		await maintainBranches({ config, shell, automerger })
 		setFinalStatus(automerger)
@@ -36,7 +42,9 @@ async function run() {
 		let statusMessage =
 			`Merge bot error: ${error.message} <${actionUrl}|Action Run>`
 		core.setFailed(error.message)
-		core.setOutput('status', 'error')
+		// #74377 - 'failure', not 'error': the workflow's Slack step filters
+		// on notify_when: 'warning,failure'.
+		core.setOutput('status', 'failure')
 		core.setOutput('status-message', statusMessage)
 	}
 }
@@ -113,12 +121,23 @@ function readConfig() {
  * The orchestrator owns these outputs to prevent phases from clobbering each other.
  *
  * Merge conflicts are expected behavior and count as success - an issue was
- * created for the developer to resolve. Only actual errors (exceptions) should
- * result in failure status.
+ * created for the developer to resolve. Anything else that stopped the chain
+ * reports failure, whether it surfaced as an exception or was caught and
+ * recorded by executeMerges.
  *
  * @param {AutoMerger} automerger The automerger instance
  */
 function setFinalStatus(automerger) {
+	// #74377 - executeMerges catches its own exceptions, so run() returns
+	// normally and the crash handler never sees a broken chain.
+	if (automerger.failureMessage) {
+		core.setOutput('status', 'failure')
+		core.setOutput('status-message',
+			`Merge chain failed: ${automerger.failureMessage}` +
+			` <${automerger.actionUrl}|Action Run>`)
+		return
+	}
+
 	// Both successful merges AND handled conflicts are "success"
 	// Conflicts are expected - an issue was created for the developer
 	core.setOutput('status', 'success')

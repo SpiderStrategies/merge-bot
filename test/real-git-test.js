@@ -54,7 +54,7 @@ async function createTestRepo() {
 	execSync('git init --bare', { cwd: originDir })
 
 	// Initialize repo
-	git('init')
+	git('init -b master')
 	git('config user.email "test@test.com"')
 	git('config user.name "Test"')
 	git(`remote add origin ${originDir}`)
@@ -279,7 +279,6 @@ tap.test('Phase 1b: Multi-step chain (merges through release, then conflicts at 
 	// Track what happens
 	let conflictsDetected = false
 	let conflictBranch = null
-	const createdBranches = []
 
 	const AutoMerger = require('../src/automerger')
 	class TestAutoMerger extends AutoMerger {
@@ -289,13 +288,6 @@ tap.test('Phase 1b: Multi-step chain (merges through release, then conflicts at 
 			this.conflictBranch = branch
 			await this.git.reset(branch, '--hard')
 		}
-	}
-
-	// Override createBranch to track branch creation
-	const originalCreateBranch = gitHelper.createBranch.bind(gitHelper)
-	gitHelper.createBranch = async (name, ref) => {
-		createdBranches.push(name)
-		return originalCreateBranch(name, ref)
 	}
 
 	// Override commit to use simple git commit (avoids .commitmsg file issues)
@@ -342,12 +334,11 @@ tap.test('Phase 1b: Multi-step chain (merges through release, then conflicts at 
 	t.ok(conflictsDetected, 'conflict should be detected at main')
 	t.equal(conflictBranch, 'main', 'conflict should be at main, not release-5.8.0')
 
-	// Verify merge-forward branch was created for successful step
-	t.ok(createdBranches.includes('merge-forward-pr-999-release-5.8.0'),
+	// Verify merge-forward branches reached the remote for both steps
+	const mergeForwardBranches = git("ls-remote --heads origin 'merge-forward-pr-999-*'")
+	t.match(mergeForwardBranches, /merge-forward-pr-999-release-5\.8\.0/,
 		'should create merge-forward branch for successful release-5.8.0 merge')
-
-	// Verify merge-forward branch was created for conflict step
-	t.ok(createdBranches.includes('merge-forward-pr-999-main'),
+	t.match(mergeForwardBranches, /merge-forward-pr-999-main/,
 		'should create merge-forward branch for main (before conflict detected)')
 })
 
@@ -2432,4 +2423,182 @@ tap.test('Issue #27: AutoMerger resumes chain when conflict resolution PR merges
 	t.same(executedTargets, ['main'],
 		'should resume chain targeting only main ' +
 		'(remaining after release-5.8.0)')
+})
+
+/**
+ * Builds the repo layout the #74377 tests share: release-5.8.0 with its
+ * branch-here pointer, main, and one PR commit on release-5.8.0 that adds a
+ * file main doesn't have (so the forward merge never conflicts on content).
+ *
+ * @returns {Promise<string>} the PR commit SHA
+ */
+async function setupForwardMergeRepo({ repoDir, git }) {
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	git('checkout -b release-5.8.0')
+	git('push origin release-5.8.0')
+	git('branch branch-here-release-5.8.0')
+	git('push origin branch-here-release-5.8.0')
+
+	git('checkout -b main')
+	git('push origin main')
+
+	git('checkout release-5.8.0')
+	await writeFile(join(repoDir, 'pr-feature.txt'), 'PR feature\n')
+	git('add pr-feature.txt')
+	git('commit -m "PR feature"')
+	const prCommit = git('rev-parse HEAD')
+	git('push origin release-5.8.0')
+
+	return prCommit
+}
+
+/**
+ * Builds an AutoMerger wired to real git in [repoDir], merging [prCommit]
+ * from release-5.8.0 towards main.
+ */
+function createForwardMergeAction({ repoDir, prCommit, prNumber }) {
+	const { Shell, Git } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.startsWith('gh ')) return ''
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	const gitHelper = new Git(shell)
+
+	// The real commit() writes .commitmsg into cwd, which isn't repoDir here
+	gitHelper.commit = async (message, author) => {
+		const authorStr = `${author.name} <${author.email}>`
+		const escapedMsg = message.replace(/`/g, "'").replace(/"/g, '\\"')
+		return shell.exec(`git commit -m "${escapedMsg}" --author="${authorStr}"`)
+	}
+
+	const AutoMerger = require('../src/automerger')
+	const action = new AutoMerger({
+		pullRequest: { merged: true, head: { sha: prCommit }, merge_commit_sha: prCommit },
+		repository: { owner: 'test', name: 'repo' },
+		config: {
+			branches: { 'release-5.8.0': {}, 'main': {} },
+			mergeTargets: ['main']
+		},
+		prNumber,
+		prAuthor: 'testuser',
+		prTitle: 'Add feature',
+		prBranch: 'feature-branch',
+		baseBranch: 'release-5.8.0',
+		prCommitSha: prCommit,
+		core,
+		shell,
+		gh: {
+			github: {
+				context: {
+					serverUrl: 'https://github.com',
+					runId: 1,
+					repo: { owner: 'test', repo: 'repo' }
+				}
+			},
+			async createIssue() {
+				return { data: { number: 999, html_url: 'http://example.com' } }
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test', email: 'test@test.com' },
+							message: 'Test commit'
+						}
+					}]
+				}
+			}
+		},
+		git: gitHelper
+	})
+
+	action.terminalBranch = 'main'
+	action.lastSuccessfulBranch = 'release-5.8.0'
+	action.lastSuccessfulMergeRef = prCommit
+
+	return action
+}
+
+tap.test('#74377: a concurrent run advancing main does not break the target update', async t => {
+	// Reproduces attempt 1 of actions/runs/31710892479: another merge-bot run
+	// pushed main between this run's clone and its target-branch push.
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	const prCommit = await setupForwardMergeRepo({ repoDir, git })
+
+	// A separate clone stands in for the other merge-bot run. It has to be a
+	// separate clone: pushing from repoDir would also refresh this run's refs
+	// and hide the staleness that causes the bug.
+	const otherDir = await mkdtemp(join(tmpdir(), 'merge-bot-other-'))
+	t.teardown(async () => {
+		await rm(otherDir, { recursive: true, force: true })
+	})
+	execSync(`git clone --branch main ${originDir} ${otherDir}`, { encoding: 'utf-8' })
+	const otherGit = createGitHelper(otherDir)
+	otherGit('config user.email "other@test.com"')
+	otherGit('config user.name "Other"')
+
+	const action = createForwardMergeAction({ repoDir, prCommit, prNumber: 74280 })
+
+	// Push to main after the forward merge is built but before the target
+	// update runs - the window the race lands in
+	const updateTargetBranches = action.updateTargetBranches.bind(action)
+	action.updateTargetBranches = async (branches) => {
+		await writeFile(join(otherDir, 'concurrent.txt'), 'From the other run\n')
+		otherGit('add concurrent.txt')
+		otherGit('commit -m "Concurrent run"')
+		otherGit('push origin main')
+		return updateTargetBranches(branches)
+	}
+
+	const result = await action.executeMerges(['main'])
+	t.equal(result, true, 'the merge chain should complete')
+
+	git('fetch origin')
+	const mainFiles = git('ls-tree --name-only origin/main').split('\n')
+	t.ok(mainFiles.includes('pr-feature.txt'),
+		'main should have the PR change')
+	t.ok(mainFiles.includes('concurrent.txt'),
+		'main should still have the concurrent run\'s change')
+})
+
+tap.test('#74377: a leftover merge-forward branch does not block a re-run', async t => {
+	// Reproduces attempt 2 of actions/runs/31734477096: attempt 1 died at the
+	// main push and left merge-forward-pr-<n>-main behind on the remote.
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	const prCommit = await setupForwardMergeRepo({ repoDir, git })
+
+	// The debris from the failed first attempt: a merge-forward branch on the
+	// remote that is ahead of the base this run will branch from
+	git('checkout -b merge-forward-pr-74333-main origin/main')
+	await writeFile(join(repoDir, 'leftover.txt'), 'From the failed attempt\n')
+	git('add leftover.txt')
+	git('commit -m "Leftover from attempt 1"')
+	git('push origin merge-forward-pr-74333-main')
+	git('checkout release-5.8.0')
+	git('branch -D merge-forward-pr-74333-main')
+
+	const action = createForwardMergeAction({ repoDir, prCommit, prNumber: 74333 })
+
+	const result = await action.executeMerges(['main'])
+	t.equal(result, true, 'the merge chain should complete')
+
+	git('fetch origin')
+	const mainFiles = git('ls-tree --name-only origin/main').split('\n')
+	t.ok(mainFiles.includes('pr-feature.txt'),
+		'main should have the PR change')
 })
