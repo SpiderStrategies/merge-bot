@@ -36347,6 +36347,7 @@ const { writeFile } = __nccwpck_require__(1943)
 
 const { findIssueNumber } = __nccwpck_require__(8863)
 const IssueResolver = __nccwpck_require__(6049)
+const pushWithRetry = __nccwpck_require__(2073)
 const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX, ISSUE_COMMENT_FILENAME } = __nccwpck_require__(9992)
 const {
 	extractOriginalPRNumber,
@@ -36422,6 +36423,7 @@ class AutoMerger {
 		this.statusMessage = null
 		this.lastSuccessfulMergeRef = null
 		this.lastSuccessfulBranch = null
+		this.failureMessage = null
 	}
 
 	async run() {
@@ -36547,6 +36549,9 @@ class AutoMerger {
 			} catch (e) {
 				this.core.error(e.message)
 				this.core.setFailed(e.message)
+				// #74377 - setFinalStatus reads this so a broken chain isn't
+				// reported as a success
+				this.failureMessage = e.message
 				break
 			} finally {
 				this.core.endGroup()
@@ -36651,7 +36656,6 @@ class AutoMerger {
 
 	/**
 	 * Updates a single target branch to match its merge-forward commit.
-	 * Attempts fast-forward first, falls back to merge commit if needed.
 	 *
 	 * @param {string} mergeForwardBranch - The merge-forward branch name
 	 *   (e.g., 'merge-forward-pr-123-release-5.8.0' or 'merge-forward-pr-123-main')
@@ -36659,20 +36663,48 @@ class AutoMerger {
 	 *   (e.g., 'release-5.8.0' or 'main')
 	 */
 	async updateTargetBranch(mergeForwardBranch, targetBranch) {
-		this.core.info(`Fast-forwarding ${targetBranch} to ${mergeForwardBranch}`)
-		await this.git.checkout(targetBranch)
+		this.core.info(`Updating ${targetBranch} from ${mergeForwardBranch}`)
 
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: targetBranch,
+			merge: () => this.applyMergeForward(mergeForwardBranch, targetBranch)
+		})
+	}
+
+	/**
+	 * Merges the commit at the tip of [mergeForwardBranch] into the currently
+	 * checked out [targetBranch].
+	 *
+	 * Fast-forwards when the merge-forward branch was built on the target's
+	 * current tip, and falls back to a merge commit when a concurrent
+	 * merge-bot run moved the target on in the meantime (#74377).
+	 *
+	 * @param {string} mergeForwardBranch - The merge-forward branch name
+	 * @param {string} targetBranch - The branch already checked out
+	 */
+	async applyMergeForward(mergeForwardBranch, targetBranch) {
 		const mergeForwardCommit = await this.shell.exec(`git rev-parse origin/${mergeForwardBranch}`)
 
 		try {
 			await this.git.merge(mergeForwardCommit, '--ff-only')
 			this.core.info(`Fast-forwarded ${targetBranch}`)
+			return
 		} catch (e) {
 			this.core.info(`Fast-forward failed, creating merge commit for ${targetBranch}`)
-			await this.git.merge(mergeForwardCommit, '--no-ff')
 		}
 
-		await this.git.push(`origin ${targetBranch}`)
+		try {
+			await this.git.merge(mergeForwardCommit, '--no-ff')
+		} catch (e) {
+			// Retrying can't help - the same conflict recurs - so leave a
+			// clean tree behind and let the failure surface.
+			await this.shell.execQuietly('git merge --abort')
+			throw new Error(
+				`Could not merge ${mergeForwardBranch} into` +
+				` ${targetBranch}: ${e.message}`)
+		}
 	}
 
 	/**
@@ -36704,16 +36736,20 @@ class AutoMerger {
 		// https://github.com/SpiderStrategies/Scoreboard/actions/runs/19943416287/job/57186800013
 		options = '--no-commit --no-ff'
 	}) {
+		// #74377 - The runner's clone captured origin/* up to a minute ago and
+		// a concurrent run may have advanced the target since, so refresh
+		// before picking a base.
+		await this.shell.exec('git fetch origin')
+
 		// Create merge-forward based on the TARGET's branch-here, not the PR's progress.
 		// This ensures we merge FORWARD (few commits) not backward (thousands).
 		// The merge direction is: PR changes -> into -> target branch
 		const currentMergeForward = this.createMergeForwardBranchName(branch)
 		const targetRef = this.getBranchHereRef(branch)
-		await this.git.createBranch(currentMergeForward, `origin/${targetRef}`)
-		await this.git.push(`--force origin ${currentMergeForward}`)
-
-		// Switch to the merge-forward branch to perform the merge there
-		await this.git.checkout(currentMergeForward)
+		// #74377 - -B and --force so a re-run overwrites whatever a failed
+		// earlier attempt left behind, locally and on the remote.
+		await this.shell.exec(`git checkout -B ${currentMergeForward} origin/${targetRef}`)
+		await this.git.push(`--force --set-upstream origin ${currentMergeForward}`)
 
 		// Merge the PR's progress (lastSuccessfulMergeRef) INTO the target-based branch.
 		// This is the forward direction: few PR commits merged into the target.
@@ -36724,7 +36760,6 @@ class AutoMerger {
 
 		let mergeResult
 		try {
-			await this.git.pull() // Try to minimize chances of repo being out of date with origin (because of concurrent actions)
 			mergeResult = await this.git.merge(this.lastSuccessfulMergeRef, options)
 			this.core.info(mergeResult)
 		} catch (e) {
@@ -36924,6 +36959,7 @@ const {
 	extractSourceFromMergeConflicts,
 	extractTargetFromMergeForward
 } = __nccwpck_require__(9005)
+const pushWithRetry = __nccwpck_require__(2073)
 
 /**
  * Maintains branch-here pointers by updating them to the latest commit that
@@ -37237,6 +37273,9 @@ class BranchMaintainer {
 	 * The ancestry merge is critical: without it, branch-here would
 	 * have a merge commit that doesn't exist on the release branch,
 	 * causing them to diverge.
+	 *
+	 * Both pushes go through pushWithRetry because a concurrent
+	 * merge-bot run can advance either branch while we work (#74377).
 	 */
 	async advanceBranchHere({ releaseBranch, mergeRef, prNumber }) {
 		if (!(releaseBranch in this.config.branches)) {
@@ -37249,21 +37288,25 @@ class BranchMaintainer {
 		this.core.info(
 			`Advancing ${branchHere} with PR #${prNumber}`)
 
-		await this.shell.exec(`git checkout ${branchHere}`)
-		await this.shell.exec(`git pull`)
-		await this.shell.exec(
-			`git merge ${mergeRef} --no-ff ` +
-			`-m "Merge #${prNumber} into ${branchHere}"`)
-		await this.shell.exec(`git push origin ${branchHere}`)
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: branchHere,
+			merge: () => this.shell.exec(
+				`git merge ${mergeRef} --no-ff ` +
+				`-m "Merge #${prNumber} into ${branchHere}"`)
+		})
 
 		// Issue #19 - Preserve ancestry
-		await this.shell.exec(`git checkout ${releaseBranch}`)
-		await this.shell.exec(`git pull`)
-		await this.shell.exec(
-			`git merge ${branchHere} --no-ff ` +
-			`-m "Merge #${prNumber} from ${branchHere}` +
-			` to ${releaseBranch}"`)
-		await this.shell.exec(`git push origin ${releaseBranch}`)
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: releaseBranch,
+			merge: () => this.shell.exec(
+				`git merge ${branchHere} --no-ff ` +
+				`-m "Merge #${prNumber} from ${branchHere}` +
+				` to ${releaseBranch}"`)
+		})
 	}
 
 	/**
@@ -37281,13 +37324,15 @@ class BranchMaintainer {
 		this.core.info(
 			`Updating ${targetBranch} from ${mergeForwardBranch}`)
 
-		await this.shell.exec(`git checkout ${targetBranch}`)
-		await this.shell.exec(`git pull`)
-		await this.shell.exec(
-			`git merge origin/${mergeForwardBranch} --no-ff ` +
-			`-m "Merge ${mergeForwardBranch} into ` +
-			`${targetBranch}"`)
-		await this.shell.exec(`git push origin ${targetBranch}`)
+		await pushWithRetry({
+			shell: this.shell,
+			core: this.core,
+			branch: targetBranch,
+			merge: () => this.shell.exec(
+				`git merge origin/${mergeForwardBranch} --no-ff ` +
+				`-m "Merge ${mergeForwardBranch} into ` +
+				`${targetBranch}"`)
+		})
 	}
 
 }
@@ -37509,6 +37554,64 @@ class IssueResolver {
 }
 
 module.exports = IssueResolver
+
+
+/***/ }),
+
+/***/ 2073:
+/***/ ((module) => {
+
+/**
+ * How many times to build and push a shared branch before giving up. Three is
+ * ample for the roughly one-second window between a fetch and a push; a burst
+ * of merges long enough to exhaust it is a genuine failure worth surfacing.
+ */
+const PUSH_ATTEMPTS = 3
+
+/**
+ * Applies [merge] to the current tip of [branch] and pushes the result,
+ * retrying when a concurrent merge-bot run advances [branch] between our fetch
+ * and our push (#74377).
+ *
+ * Every attempt re-fetches and hard-resets to the remote tip, so a rejected
+ * push never leaves a half-applied merge behind. Resetting is safe at every
+ * call site because whatever is being merged lives on the remote - a
+ * merge-forward branch or the PR's head commit - so there is no local work to
+ * lose.
+ *
+ * @param {Object} options
+ * @param {Object} options.shell - Shell instance for executing commands
+ * @param {Object} options.core - The @actions/core module for logging
+ * @param {string} options.branch - The branch to advance and push
+ * @param {Function} options.merge - Performs the merge. Called once per
+ *   attempt, always with [branch] checked out at the remote tip.
+ * @param {number} [options.attempts=PUSH_ATTEMPTS] - How many times to try
+ * @returns {Promise<string>} Output of the push that succeeded
+ * @throws The final push rejection when every attempt is rejected
+ */
+async function pushWithRetry({ shell, core, branch, merge, attempts = PUSH_ATTEMPTS }) {
+	for (let attempt = 1; attempt <= attempts; attempt++) {
+		await shell.exec(`git checkout ${branch}`)
+		await shell.exec(`git fetch origin ${branch}`)
+		await shell.exec(`git reset --hard origin/${branch}`)
+
+		await merge()
+
+		try {
+			return await shell.exec(`git push origin ${branch}`)
+		} catch (e) {
+			if (attempt === attempts) {
+				throw e
+			}
+			core.info(`Push of ${branch} was rejected` +
+				` (attempt ${attempt} of ${attempts});` +
+				` retrying against its new tip`)
+		}
+	}
+}
+
+module.exports = pushWithRetry
+module.exports.PUSH_ATTEMPTS = PUSH_ATTEMPTS
 
 
 /***/ }),
@@ -39541,6 +39644,12 @@ async function run() {
 		await git.configureIdentity('Spider Merge Bot',
 			'merge-bot@spiderstrategies.com')
 
+		// #72975 - git requires the merge=ours driver in .gitattributes to be
+		// registered per clone, or those attributes are a silent no-op.
+		// #74377 - Here rather than in the workflow, so release branches whose
+		// workflow file predates the rename to merge-bot.yml are covered too.
+		await shell.exec('git config merge.ours.driver true')
+
 		const automerger = await automerge({ config, shell, gh, git })
 		await maintainBranches({ config, shell, automerger })
 		setFinalStatus(automerger)
@@ -39551,7 +39660,9 @@ async function run() {
 		let statusMessage =
 			`Merge bot error: ${error.message} <${actionUrl}|Action Run>`
 		core.setFailed(error.message)
-		core.setOutput('status', 'error')
+		// #74377 - 'failure', not 'error': the workflow's Slack step filters
+		// on notify_when: 'warning,failure'.
+		core.setOutput('status', 'failure')
 		core.setOutput('status-message', statusMessage)
 	}
 }
@@ -39628,12 +39739,23 @@ function readConfig() {
  * The orchestrator owns these outputs to prevent phases from clobbering each other.
  *
  * Merge conflicts are expected behavior and count as success - an issue was
- * created for the developer to resolve. Only actual errors (exceptions) should
- * result in failure status.
+ * created for the developer to resolve. Anything else that stopped the chain
+ * reports failure, whether it surfaced as an exception or was caught and
+ * recorded by executeMerges.
  *
  * @param {AutoMerger} automerger The automerger instance
  */
 function setFinalStatus(automerger) {
+	// #74377 - executeMerges catches its own exceptions, so run() returns
+	// normally and the crash handler never sees a broken chain.
+	if (automerger.failureMessage) {
+		core.setOutput('status', 'failure')
+		core.setOutput('status-message',
+			`Merge chain failed: ${automerger.failureMessage}` +
+			` <${automerger.actionUrl}|Action Run>`)
+		return
+	}
+
 	// Both successful merges AND handled conflicts are "success"
 	// Conflicts are expected - an issue was created for the developer
 	core.setOutput('status', 'success')
