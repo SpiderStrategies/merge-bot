@@ -33,6 +33,7 @@ class BranchMaintainer {
 
 	/**
 	 * Main entry point - orchestrates branch maintenance:
+	 * 0. Stand down when another PR owns this commit's merge chain
 	 * 1. Delete merge-conflicts branches when conflict PRs are merged
 	 * 2. Skip the rest when the base isn't a configured branch
 	 * 3. Maintain branch-here pointers (only if commits reached main)
@@ -40,10 +41,23 @@ class BranchMaintainer {
 	 * @param {Object} options
 	 * @param {string} [options.automergeConflictBranch] - The branch where automerge
 	 *   encountered conflicts (undefined if automerge succeeded)
+	 * @param {string} [options.chainOwner] - The PR that owns the
+	 *   forward-merge chain for this commit, when it isn't this PR
 	 */
-	async run({ automergeConflictBranch } = {}) {
+	async run({ automergeConflictBranch, chainOwner } = {}) {
 		if (!this.pullRequest.merged) {
 			this.core.info('PR was not merged, skipping branch maintenance')
+			return
+		}
+
+		// #74510 - AutoMerger stood down because this PR's head only became
+		// reachable from its base through another PR's merge. That PR's run
+		// does the branch maintenance for the commit; doing it here too
+		// duplicates the work.
+		if (chainOwner) {
+			this.core.info(
+				`Skipping branch maintenance: #${chainOwner} owns the` +
+				` forward-merge chain for this commit`)
 			return
 		}
 

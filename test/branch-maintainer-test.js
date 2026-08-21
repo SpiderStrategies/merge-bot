@@ -445,3 +445,42 @@ tap.test('run skips maintenance when base is not a configured branch', async t =
 		'should log a skip message mentioning the ' +
 		'non-configured base')
 })
+
+tap.test('run skips maintenance when another PR owns the chain', async t => {
+	// #74510 - AutoMerger stood down because this PR's head only became
+	// reachable from its base through another PR's merge. Advancing
+	// branch-here here would duplicate that PR's run.
+	const execCalls = []
+	const core = mockCore({})
+
+	const mockShell = {
+		core,
+		async exec(cmd) { execCalls.push(cmd); return '' },
+		async execQuietly(cmd) { execCalls.push(cmd); return '' }
+	}
+
+	const maintainer = new TestBranchMaintainer({
+		pullRequest: {
+			number: 73894,
+			head: { ref: 'stack-bottom', sha: 'abc123' },
+			base: { ref: 'release-5.8.0' },
+			merged: true
+		},
+		config: {
+			branches: { 'release-5.8.0': {}, 'main': {} },
+			mergeOperations: {}
+		},
+		core,
+		shell: mockShell
+	})
+
+	await maintainer.run({
+		automergeConflictBranch: null,
+		chainOwner: '74485'
+	})
+
+	t.same(execCalls, [],
+		'should not touch branch-here or merge-forward branches')
+	t.ok(core.infoMsgs.some(m => m.includes('#74485 owns')),
+		'should log which PR owns the chain')
+})
