@@ -12,12 +12,13 @@
  */
 
 const tap = require('tap')
-const { mkdtemp, rm, writeFile } = require('fs/promises')
+const { mkdtemp, rm, unlink, writeFile } = require('fs/promises')
 const { tmpdir } = require('os')
 const { join } = require('path')
 const { execSync } = require('child_process')
 
 const { mockCore } = require('gh-action-components')
+const { ISSUE_COMMENT_FILENAME } = require('../src/constants')
 
 /**
  * Helper to run git commands in a test repo
@@ -2601,4 +2602,292 @@ tap.test('#74377: a leftover merge-forward branch does not block a re-run', asyn
 	const mainFiles = git('ls-tree --name-only origin/main').split('\n')
 	t.ok(mainFiles.includes('pr-feature.txt'),
 		'main should have the PR change')
+})
+
+/**
+ * Builds the #74510 incident's shape: a two-commit stack on release-5.8.0
+ * where only the top branch is merged, under a consolidated PR's name. Both
+ * stack commits become reachable from release-5.8.0, which is what makes
+ * GitHub report every stack PR as merged.
+ *
+ * main holds conflicting content, so any run that does not stand down leaves
+ * an issue, a merge-conflicts branch and a merge-forward branch behind.
+ *
+ * @returns {Promise<Object>} the bottom and top stack commits
+ */
+async function setupConsolidatedStackRepo({ repoDir, git }) {
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	git('checkout -b release-5.8.0')
+	git('push origin release-5.8.0')
+	git('branch branch-here-release-5.8.0')
+	git('push origin branch-here-release-5.8.0')
+
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'test.txt'), 'MAIN VERSION\n')
+	git('add test.txt')
+	git('commit -m "Main version"')
+	git('push origin main')
+
+	// PR #73894's branch, the bottom of the stack
+	git('checkout -b stack-bottom release-5.8.0')
+	await writeFile(join(repoDir, 'test.txt'), 'BOTTOM\n')
+	git('add test.txt')
+	git('commit -m "Stack bottom"')
+	const bottomCommit = git('rev-parse HEAD')
+
+	// PR #73914's branch, the top of the stack. The consolidated PR
+	// #74485 is this same commit under another name, so the two PRs
+	// share one head - the co-tip case.
+	git('checkout -b stack-top')
+	await writeFile(join(repoDir, 'test.txt'), 'TOP\n')
+	git('add test.txt')
+	git('commit -m "Stack top"')
+	const topCommit = git('rev-parse HEAD')
+
+	git('checkout release-5.8.0')
+	git('merge stack-top --no-ff -m ' +
+		'"Merge pull request #74485 from test/73891-consolidated-stack"')
+	const mergeCommit = git('rev-parse HEAD')
+	git('push origin release-5.8.0')
+
+	return { bottomCommit, topCommit, mergeCommit }
+}
+
+/**
+ * Builds an AutoMerger for a PR on release-5.8.0 in [repoDir], recording
+ * every issue it creates so callers can assert nothing was opened.
+ */
+function createStackMergeAction({ repoDir, prNumber, prCommit, mergeCommit }) {
+	const { Shell, Git } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.startsWith('gh ')) return ''
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	const gitHelper = new Git(shell)
+	gitHelper.commit = async (message, author) => {
+		const authorStr = `${author.name} <${author.email}>`
+		const escapedMsg = message.replace(/`/g, "'").replace(/"/g, '\\"')
+		return shell.exec(`git commit -m "${escapedMsg}" --author="${authorStr}"`)
+	}
+
+	const createdIssues = []
+	const AutoMerger = require('../src/automerger')
+	const action = new AutoMerger({
+		pullRequest: {
+			merged: true,
+			merge_commit_sha: mergeCommit,
+			head: { sha: prCommit, ref: 'stack-branch' },
+			base: { ref: 'release-5.8.0' }
+		},
+		repository: { owner: 'test', name: 'repo' },
+		config: {
+			branches: { 'release-5.8.0': {}, 'main': {} },
+			mergeTargets: ['main']
+		},
+		prNumber,
+		prAuthor: 'testuser',
+		prTitle: 'Stack PR',
+		prBranch: 'stack-branch',
+		baseBranch: 'release-5.8.0',
+		prCommitSha: prCommit,
+		core,
+		shell,
+		gh: {
+			github: {
+				context: {
+					serverUrl: 'https://github.com',
+					runId: 1,
+					repo: { owner: 'test', repo: 'repo' }
+				}
+			},
+			async createIssue(options) {
+				createdIssues.push(options)
+				return { data: { number: 999, html_url: 'http://example.com' } }
+			},
+			async fetchCommits() {
+				return {
+					data: [{
+						commit: {
+							author: { name: 'Test', email: 'test@test.com' },
+							message: 'Stack commit'
+						}
+					}]
+				}
+			}
+		},
+		git: gitHelper
+	})
+
+	return { action, createdIssues, core }
+}
+
+/**
+ * The remote branch names created by a forward-merge attempt, so tests can
+ * assert on their absence as well as their presence.
+ */
+function botBranchesOnOrigin(git) {
+	git('fetch origin')
+	return git('ls-remote --heads origin').split('\n')
+		.map(line => line.split('refs/heads/')[1])
+		.filter(name => name?.startsWith('merge-forward-pr-')
+			|| name?.startsWith('merge-conflicts-'))
+}
+
+tap.test('#74510: a PR whose head only rode in on another PR is skipped', async t => {
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	const { bottomCommit, mergeCommit } =
+		await setupConsolidatedStackRepo({ repoDir, git })
+
+	// PR #73894 is the bottom of the stack. Its head became reachable
+	// from release-5.8.0 because #74485 merged a branch built on top of
+	// it, so it has nothing of its own to carry forward.
+	const { action, createdIssues } = createStackMergeAction({
+		repoDir, prNumber: 73894, prCommit: bottomCommit, mergeCommit
+	})
+
+	await action.run()
+
+	t.same(botBranchesOnOrigin(git), [],
+		'should create no merge-forward or merge-conflicts branch')
+	t.same(createdIssues, [], 'should open no merge-conflict issue')
+	t.equal(action.chainOwner, '74485',
+		'should record #74485 as the chain owner')
+})
+
+tap.test('#74510: a PR sharing its head with the merged PR is skipped', async t => {
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	const { topCommit, mergeCommit } =
+		await setupConsolidatedStackRepo({ repoDir, git })
+
+	// #73914 and the consolidated #74485 point at the same commit, so no
+	// field-level check can tell them apart - both are genuinely merged
+	// by the same merge commit. Only the merge's own message can.
+	const { action, createdIssues } = createStackMergeAction({
+		repoDir, prNumber: 73914, prCommit: topCommit, mergeCommit
+	})
+
+	await action.run()
+
+	t.same(botBranchesOnOrigin(git), [],
+		'should create no merge-forward or merge-conflicts branch')
+	t.same(createdIssues, [], 'should open no merge-conflict issue')
+	t.equal(action.chainOwner, '74485',
+		'should defer to the PR the merge commit names')
+})
+
+tap.test('#74510: the PR the merge names still runs its chain', async t => {
+	// Guards against over-blocking, which would silently stop forward
+	// merges - the worst failure mode of the ownership check.
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+		try {
+			await unlink(ISSUE_COMMENT_FILENAME)
+		} catch (e) {
+			// The file only exists if an issue was created
+		}
+	})
+
+	const { topCommit, mergeCommit } =
+		await setupConsolidatedStackRepo({ repoDir, git })
+
+	const { action, createdIssues } = createStackMergeAction({
+		repoDir, prNumber: 74485, prCommit: topCommit, mergeCommit
+	})
+
+	await action.run()
+
+	t.equal(action.chainOwner, null, 'should not stand down')
+
+	const botBranches = botBranchesOnOrigin(git)
+	t.ok(botBranches.includes('merge-forward-pr-74485-main'),
+		'should create the merge-forward branch for main')
+	t.ok(botBranches.some(b => b.startsWith('merge-conflicts-')),
+		'should create the merge-conflicts branch for the conflict at main')
+	t.equal(createdIssues.length, 1, 'should open one merge-conflict issue')
+})
+
+tap.test('#74510: a later sibling PR does not steal an earlier PR\'s chain', async t => {
+	// The ownership check's dangerous direction is over-blocking: a false
+	// stand-down means a forward merge silently never happens. Every merge
+	// that lands on the base after ours is also on our ancestry path, so
+	// ownership has to come from the earliest one.
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+		try {
+			await unlink(ISSUE_COMMENT_FILENAME)
+		} catch (e) {
+			// The file only exists if an issue was created
+		}
+	})
+
+	await writeFile(join(repoDir, 'test.txt'), 'Original\n')
+	git('add test.txt')
+	git('commit -m "Initial"')
+
+	git('checkout -b release-5.8.0')
+	git('push origin release-5.8.0')
+	git('branch branch-here-release-5.8.0')
+	git('push origin branch-here-release-5.8.0')
+
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'test.txt'), 'MAIN VERSION\n')
+	git('add test.txt')
+	git('commit -m "Main version"')
+	git('push origin main')
+
+	git('checkout -b ours release-5.8.0')
+	await writeFile(join(repoDir, 'test.txt'), 'OURS\n')
+	git('add test.txt')
+	git('commit -m "Our change"')
+	const ourCommit = git('rev-parse HEAD')
+
+	git('checkout release-5.8.0')
+	git('merge ours --no-ff -m "Merge pull request #73894 from test/ours"')
+	const ourMergeCommit = git('rev-parse HEAD')
+
+	// A sibling PR merges right behind us, so its merge commit is a
+	// descendant of ours and shows up on the same ancestry path
+	git('checkout -b theirs release-5.8.0')
+	await writeFile(join(repoDir, 'other.txt'), 'THEIRS\n')
+	git('add other.txt')
+	git('commit -m "Their change"')
+
+	git('checkout release-5.8.0')
+	git('merge theirs --no-ff -m "Merge pull request #73999 from test/theirs"')
+	git('push origin release-5.8.0')
+
+	const { action, createdIssues } = createStackMergeAction({
+		repoDir,
+		prNumber: 73894,
+		prCommit: ourCommit,
+		mergeCommit: ourMergeCommit
+	})
+
+	await action.run()
+
+	t.equal(action.chainOwner, null,
+		'should not defer to the sibling PR merged after us')
+	t.ok(botBranchesOnOrigin(git).includes('merge-forward-pr-73894-main'),
+		'should still run our forward-merge chain')
+	t.equal(createdIssues.length, 1,
+		'should open the merge-conflict issue for our own conflict')
 })

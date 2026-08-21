@@ -1710,3 +1710,189 @@ tap.test('merge', async t => {
 		t.ok(conflictsHandled, 'should call handleConflicts')
 	})
 })
+
+tap.test('findChainOwner', async t => {
+	// #74510 - GitHub reports merged:true for a PR whose head merely
+	// became reachable from its base, so the merge commit that brought
+	// the head in decides who owns the forward-merge chain.
+	const BRINGER = 'bringersha'
+
+	/**
+	 * Wires an AutoMerger whose git rev-list returns [revList] and whose
+	 * git show returns [subject] for the merge commit it names.
+	 */
+	function createAction({ subject, revList = BRINGER, prNumber = 123 }) {
+		const core = mockCore({})
+		const shell = createMockShell(core, (cmd) => {
+			if (cmd.startsWith('git rev-list')) {
+				if (revList instanceof Error) throw revList
+				return revList
+			}
+			if (cmd.startsWith('git show -s --format=%s')) {
+				return subject
+			}
+			return ''
+		})
+		const action = new TestAutoMerger({ core, shell, prNumber })
+		return { action, core }
+	}
+
+	t.test('returns the PR the bringing merge names', async t => {
+		const { action } = createAction({
+			subject: 'Merge pull request #74485 from test/consolidated',
+			prNumber: 73894
+		})
+
+		t.equal(await action.findChainOwner(), '74485')
+	})
+
+	t.test('returns null when the merge names this PR', async t => {
+		const { action } = createAction({
+			subject: 'Merge pull request #74485 from test/consolidated',
+			prNumber: 74485
+		})
+
+		t.equal(await action.findChainOwner(), null,
+			'a PR that owns its own merge proceeds')
+	})
+
+	t.test('walks to the earliest merge on the ancestry path', async t => {
+		// --topo-order puts descendants first, so the merge that
+		// actually brought the head in is the last line
+		const shownFor = []
+		const core = mockCore({})
+		const shell = createMockShell(core, (cmd) => {
+			if (cmd.startsWith('git rev-list')) {
+				t.match(cmd, /--topo-order/,
+					'should not rely on commit dates for ordering')
+				return 'newestmerge\nmiddlemerge\noldestmerge\n'
+			}
+			if (cmd.startsWith('git show -s --format=%s')) {
+				shownFor.push(cmd.split(' ').pop())
+				return 'Merge pull request #74485 from test/x'
+			}
+			return ''
+		})
+		const action = new TestAutoMerger({ core, shell, prNumber: 73894 })
+
+		t.equal(await action.findChainOwner(), '74485')
+		t.same(shownFor, ['oldestmerge'],
+			'should read the earliest merge, not the newest')
+	})
+
+	t.test('returns null when nothing brought the head in', async t => {
+		// A squash or rebase merge puts a new SHA on the base, so the
+		// PR head is not reachable and there is no merge to consult
+		const { action } = createAction({ subject: '', revList: '' })
+
+		t.equal(await action.findChainOwner(), null)
+	})
+
+	t.test('returns null for an un-attributed merge', async t => {
+		// manual-merge.sh names no PR, so nobody claimed the commit
+		// and we behave as we always have
+		const { action } = createAction({
+			subject: 'Merge release-5.8.1 into main'
+		})
+
+		t.equal(await action.findChainOwner(), null)
+	})
+
+	t.test('warns and fails open when rev-list cannot answer', async t => {
+		// A clone that can't resolve the head commit or origin/<base>
+		// would otherwise look exactly like 'nobody owns this commit',
+		// so the check going dark has to be visible in the run log
+		const { action, core } = createAction({
+			subject: '',
+			revList: new Error('fatal: bad revision')
+		})
+
+		t.equal(await action.findChainOwner(), null,
+			'should fail open rather than skip a forward merge')
+		t.equal(core.warningMsgs.length, 1,
+			'should annotate the run so a dark check is not silent')
+		t.match(core.warningMsgs[0],
+			/Could not determine chain ownership for abc123 on main/,
+			'should name the commit and branch it could not resolve')
+	})
+})
+
+tap.test('run stands down for inferred merges', async t => {
+	/**
+	 * Builds an AutoMerger over a base branch whose bringing merge
+	 * names PR #74485, recording whether the merge chain ran.
+	 */
+	function createAction({ prNumber, baseBranch = 'release-5.8.0' }) {
+		const core = mockCore({})
+		const shell = createMockShell(core, (cmd) => {
+			if (cmd.startsWith('git rev-list')) return 'bringersha'
+			if (cmd.startsWith('git show -s --format=%s')) {
+				return 'Merge pull request #74485 from test/consolidated'
+			}
+			return ''
+		})
+		const executedMerges = []
+
+		class TestAction extends TestAutoMerger {
+			async executeMerges(targets) {
+				executedMerges.push(...targets)
+				return true
+			}
+		}
+
+		const action = new TestAction({
+			pullRequest: {
+				merged: true,
+				merge_commit_sha: 'mergesha',
+				head: { sha: 'abc123', ref: 'feature-branch' }
+			},
+			baseBranch,
+			config: {
+				branches: { 'release-5.8.0': {}, 'main': {} },
+				mergeTargets: ['main']
+			},
+			core,
+			shell,
+			prNumber
+		})
+
+		return { action, executedMerges, core }
+	}
+
+	t.test('skips the chain when another PR owns the commit', async t => {
+		const { action, executedMerges, core } = createAction({ prNumber: 73894 })
+
+		await action.run()
+
+		t.same(executedMerges, [], 'should not merge anything forward')
+		t.equal(action.chainOwner, '74485',
+			'should record the owner for BranchMaintainer')
+		t.ok(core.infoMsgs.some(m => m.includes('#74485 owns the')),
+			'should say which PR owns the chain')
+	})
+
+	t.test('runs the chain for the PR the merge names', async t => {
+		const { action, executedMerges } = createAction({ prNumber: 74485 })
+
+		await action.run()
+
+		t.same(executedMerges, ['main'],
+			'the named PR still merges forward')
+		t.equal(action.chainOwner, null)
+	})
+
+	t.test('exempts merge-forward PRs from the check', async t => {
+		// A conflict-resolution PR resumes an existing chain, so it
+		// must never stand down even when the check would match
+		const { action, executedMerges } = createAction({
+			prNumber: 70416,
+			baseBranch: 'merge-forward-pr-70412-release-5.8.0'
+		})
+
+		await action.run()
+
+		t.same(executedMerges, ['main'],
+			'should resume the chain regardless of ownership')
+		t.equal(action.chainOwner, null)
+	})
+})

@@ -94,7 +94,9 @@ async function maintainBranches({ config, shell, automerger }) {
 	})
 	await maintainer.run({
 		automergeConflictBranch:
-			automerger.conflictBranch
+			automerger.conflictBranch,
+		// #74510 - set when the automerge phase deferred to another PR
+		chainOwner: automerger.chainOwner
 	})
 }
 

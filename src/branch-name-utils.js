@@ -93,10 +93,46 @@ function extractSourceFromMergeConflicts(branchName) {
 	return match ? match[1] : null
 }
 
+/**
+ * Extracts the PR number a merge commit's subject line claims to have
+ * merged. The merge commit is the only record of which PR actually put a
+ * commit on a branch, so this is what decides forward-merge ownership
+ * (#74510).
+ *
+ * Recognizes the three attributed subjects that reach Impact's release
+ * branches:
+ * - `Merge pull request #N from owner/branch` (GitHub UI and spider-shell)
+ * - `auto-merge of <sha> ... triggered by (#N) on \`branch\`` (merge-bot)
+ * - `Merge #N into branch-here-release-5.8.0` (branch-here sync)
+ *
+ * Anything else returns null so callers can fail open: a hand-rolled
+ * `Merge release-5.8.1 into main` from manual-merge.sh claims no PR, and
+ * `Merge #73891 (22ab4bd97) into main` is merge-bot's conflict issue title,
+ * which names an ISSUE rather than a PR.
+ *
+ * @param {string} subject - The merge commit's subject line
+ * @returns {string|null} The PR number, or null if the subject names none
+ */
+function extractMergedPRNumber(subject) {
+	const patterns = [
+		/^Merge pull request #(\d+)\b/,
+		/\btriggered by \(#(\d+)\)/,
+		/^Merge #(\d+) into \S/
+	]
+	for (const pattern of patterns) {
+		const match = (subject ?? '').match(pattern)
+		if (match) {
+			return match[1]
+		}
+	}
+	return null
+}
+
 module.exports = {
 	extractPRFromMergeForward,
 	extractPRFromMergeConflicts,
 	extractTargetFromMergeForward,
 	extractSourceFromMergeConflicts,
-	extractOriginalPRNumber
+	extractOriginalPRNumber,
+	extractMergedPRNumber
 }

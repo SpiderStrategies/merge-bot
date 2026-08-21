@@ -97,6 +97,39 @@ merge conflicts, preventing branch-here pointers from advancing past them.
 **Important**: Stale merge-conflicts branches prevent branch-here from advancing
 and must be deleted manually if not cleaned up automatically.
 
+### Merge Chain Ownership
+
+**Only one PR runs a forward-merge chain for a given commit.**
+
+GitHub reports a PR as merged when its head commit merely becomes *reachable*
+from its base, whoever put it there. Land a consolidated stack with
+`/merge no-squash` and every PR in it is marked merged at once - 16 webhooks,
+16 runs, 16 chains for one set of commits (#74510).
+
+So before starting a chain, the bot finds the merge that brought its head onto
+the base branch and reads which PR that merge names:
+
+- **Names this PR** - proceed.
+- **Names another PR** - stand down; that PR's run carries the commits forward,
+  and Phase 2 is skipped too.
+- **Names nobody**, or there is no merge at all (a squash or rebase put a new
+  SHA on the base) - proceed.
+
+Both unclear cases fail open, because a false stand-down means a forward merge
+silently never happens. `manual-merge.sh` lands in the last bucket, and that is
+fine: it has already done everything merge-bot would, so the run finds every hop
+`Already up to date.` and does nothing. Redundant, not harmful - and cheaper
+than teaching the bot to recognize one tool's merge message.
+
+If the graph walk itself fails - head commit not in the clone, or
+`origin/<base>` unresolvable on a shallow checkout - the bot proceeds but logs a
+**warning**. A check that has gone dark looks identical to "nobody owns this
+commit," so it has to be visible in the log.
+
+Two PRs can legitimately share one head commit - a consolidated stack PR *is*
+the stack's top branch under another name - so no field-level comparison can
+separate them. Only the merge commit's message can.
+
 ## The Core Problem: Conflict Isolation
 
 When multiple PRs have conflicts at the same point in the merge chain, their
@@ -168,11 +201,13 @@ For alternatives considered and rejected, see [this comment on issue #3](https:/
 The merge bot is a single consolidated GitHub Action that runs two phases:
 
 **Phase 1: Auto-merge**
+- Stands down when another PR owns the merge chain for this commit
 - Creates merge-forward branches for each PR
 - Merges forward through the release branch chain using branch-here snapshots
 - Creates conflict issues and merge-conflicts branches when conflicts occur
 
 **Phase 2: Branch Maintenance**
+- Skipped entirely when Phase 1 deferred to another PR
 - Updates branch-here pointers to the latest commit that reached main
 - Updates release branches after successful merge-forward chains complete
 - Cleans up completed merge-forward and merge-conflicts branches
@@ -239,3 +274,5 @@ operations.
 - Original implementation: #42921
 - Improved branch-here updates: #68703, #63954
 - Conflict isolation with merge-forward branches: #3
+- Concurrent-run safety: #74377
+- Merge chain ownership for inferred merges: #74510

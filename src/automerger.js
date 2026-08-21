@@ -5,6 +5,7 @@ const IssueResolver = require('./issue-resolver')
 const pushWithRetry = require('./push-with-retry')
 const { UP_TO_DATE, MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX, ISSUE_COMMENT_FILENAME } = require('./constants')
 const {
+	extractMergedPRNumber,
 	extractOriginalPRNumber,
 	extractTargetFromMergeForward
 } = require('./branch-name-utils')
@@ -79,6 +80,7 @@ class AutoMerger {
 		this.lastSuccessfulMergeRef = null
 		this.lastSuccessfulBranch = null
 		this.failureMessage = null
+		this.chainOwner = null
 	}
 
 	async run() {
@@ -87,6 +89,19 @@ class AutoMerger {
 			// So checking if the PR was merged here and aborting the action is the best we can do
 			this.core.info('PR was closed without being merged, aborting...')
 			return
+		}
+
+		// #74510 - Merge-forward PRs are the resume-chain path and must never
+		// stand down, however this PR's head reached the merge-forward branch.
+		if (!this.isMergeForwardPR()) {
+			this.chainOwner = await this.findChainOwner()
+			if (this.chainOwner) {
+				this.core.info(
+					`PR #${this.prNumber} rode in on #${this.chainOwner}'s` +
+					` merge; #${this.chainOwner} owns the forward-merge chain` +
+					` for ${this.prCommitSha}. Aborting...`)
+				return
+			}
 		}
 
 		await this.initializeState()
@@ -100,6 +115,64 @@ class AutoMerger {
 		this.issueNumber = findIssueNumber(commits, this.pullRequest)
 
 		await this.runMerges()
+	}
+
+	/**
+	 * Whether another PR is responsible for carrying this PR's head commit
+	 * forward.
+	 *
+	 * #74510 - GitHub reports `merged: true` for a PR whose head merely
+	 * became reachable from its base because some other PR merged a branch
+	 * built on top of it. Those PRs have nothing of their own to carry
+	 * forward. Two PRs can also share one head commit (a consolidated stack
+	 * PR and the stack's top PR), in which case both are genuinely merged
+	 * and only the one the merge commit names should own the chain.
+	 *
+	 * @returns {Promise<string|null>} The owning PR number when it is not
+	 *   this PR, else null
+	 */
+	async findChainOwner() {
+		// origin/<base> needs no extra fetch: the merge commit was pushed
+		// before the webhook fired, and actions/checkout clones afterwards.
+		let ancestryPath
+		try {
+			ancestryPath = await this.shell.exec(
+				`git rev-list --ancestry-path --merges --topo-order` +
+				` ${this.prCommitSha}..origin/${this.baseBranch}`)
+		} catch (e) {
+			// Fail open, but loudly. A clone that cannot answer this question
+			// - a missing head commit, an unresolvable origin/<base> - would
+			// otherwise look exactly like 'nobody owns this commit', and the
+			// duplicate chains this check exists to stop would come back
+			// with no signal at all. core.warning annotates the run without
+			// touching the status output, so Slack behavior is unchanged.
+			this.core.warning(
+				`Could not determine chain ownership for` +
+				` ${this.prCommitSha} on ${this.baseBranch},` +
+				` proceeding: ${e.message}`)
+			return null
+		}
+		// --topo-order never lists a commit before its descendants, so the
+		// last entry is the earliest merge on the path: the one that brought
+		// us in. Commit dates would tie or skew here, and picking a later
+		// sibling's merge would hand our chain to a PR that doesn't carry us.
+		//
+		// Empty for a squash or rebase merge: those put a new SHA on the
+		// base, so our head is not reachable and there is no merge commit to
+		// defer to.
+		const bringer = (ancestryPath ?? '').trim()
+			.split('\n').filter(Boolean).pop()
+		if (!bringer) {
+			return null
+		}
+
+		const subject = await this.shell.exec(
+			`git show -s --format=%s ${bringer}`)
+		const owner = extractMergedPRNumber(subject)
+		// Fail open: an un-attributed merge (manual-merge.sh, or any subject
+		// we don't recognize) means nobody claimed the commit, so behave as
+		// we do today rather than skip a forward merge.
+		return owner && owner !== String(this.prNumber) ? owner : null
 	}
 
 	/**

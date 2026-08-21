@@ -4,7 +4,8 @@ const {
 	extractPRFromMergeConflicts,
 	extractTargetFromMergeForward,
 	extractSourceFromMergeConflicts,
-	extractOriginalPRNumber
+	extractOriginalPRNumber,
+	extractMergedPRNumber
 } = require('../src/branch-name-utils')
 
 tap.test('extractPRFromMergeForward', async t => {
@@ -131,5 +132,46 @@ tap.test('extractOriginalPRNumber', async t => {
 			headRef: 'feature-branch',
 			prNumber: 70452
 		}), 70452)
+	})
+})
+
+tap.test('extractMergedPRNumber', async t => {
+	t.test('extracts PR from a GitHub merge commit', async t => {
+		t.equal(extractMergedPRNumber(
+			'Merge pull request #74485 from SpiderStrategies/' +
+			'73891-consolidated-stack'),
+		'74485')
+	})
+
+	t.test('extracts PR from a merge-bot forward merge', async t => {
+		t.equal(extractMergedPRNumber(
+			'auto-merge of 22ab4bd97 into `main` from ' +
+			'`feature-branch` triggered by (#73972) on ' +
+			'`release-5.8.1`'),
+		'73972')
+	})
+
+	t.test('extracts PR from a branch-here sync', async t => {
+		t.equal(extractMergedPRNumber(
+			'Merge #70168 into branch-here-release-5.8.0'),
+		'70168')
+	})
+
+	t.test('returns null for a hand-rolled branch merge', async t => {
+		// manual-merge.sh names no PR, so callers fail open
+		t.equal(extractMergedPRNumber(
+			'Merge release-5.8.1 into main'), null)
+	})
+
+	t.test('returns null for a merge-bot issue title', async t => {
+		// #74510 - the bot's conflict issue title names an
+		// ISSUE, not a PR, so it must not be read as ownership
+		t.equal(extractMergedPRNumber(
+			'Merge #73891 (22ab4bd97) into main'), null)
+	})
+
+	t.test('returns null for an empty or missing subject', async t => {
+		t.equal(extractMergedPRNumber(''), null)
+		t.equal(extractMergedPRNumber(undefined), null)
 	})
 })
