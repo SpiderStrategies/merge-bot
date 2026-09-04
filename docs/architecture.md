@@ -80,11 +80,13 @@ for a PR, not just the ones created in the current run.
 They also act as **markers in Git history** to track which commits have unresolved
 merge conflicts, preventing branch-here pointers from advancing past them.
 
-**Format**: `merge-conflicts-{issueNumber}-{sourceBranch}-to-{targetBranch}`
+**Format**: `merge-conflicts-{issueNumber}-pr-{prNumber}-{sourceBranch}-to-{targetBranch}`
 
 **Examples**:
-- `merge-conflicts-68586-release-5-8-0-to-main`
-- `merge-conflicts-68590-release-5-7-2-to-release-5-8-0`
+- `merge-conflicts-68586-pr-68580-release-5.8.0-to-main`
+- `merge-conflicts-68590-pr-68580-release-5.7.2-to-release-5.8.0`
+
+`{sourceBranch}` is the hop the merge came *from*, which is the previous hop's merge-forward branch once a chain conflicts twice: `merge-conflicts-74968-pr-74927-merge-forward-pr-74927-release-5.9.0-to-main`. Only `{prNumber}` is safe to read back out of the name; ask GitHub for anything else about the original PR (#74973).
 
 **How They Work**:
 1. Bot creates merge-conflicts branch based on the TARGET's branch-here pointer
