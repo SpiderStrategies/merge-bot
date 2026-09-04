@@ -1109,6 +1109,7 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
 	git('add test.txt')
 	git('commit -m "PR merge to release-5.8.0"')
+	const originalPrHeadSha = git('rev-parse HEAD')
 	git('push origin merge-forward-pr-69561-release-5.8.0')
 
 	// Also update release-5.8.0 to have the PR content
@@ -1149,6 +1150,14 @@ tap.test('Conflict resolution PR merged to main cleans up merge-forward branches
 	const core = mockCore({})
 	const shell = new Shell(core)
 	shell.exec = async (cmd) => {
+		// The maintainer asks GitHub for the base branch and
+		// head SHA of the PR that started the chain (#74973)
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: originalPrHeadSha
+			})
+		}
 		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
 	}
 	shell.execQuietly = async (cmd) => {
@@ -1302,6 +1311,14 @@ tap.test('branch-here advances incrementally via merge-forward (issue #11)', asy
 	const core = mockCore({})
 	const shell = new Shell(core)
 	shell.exec = async (cmd) => {
+		// The maintainer asks GitHub for the base branch and
+		// head SHA of the PR that started the chain (#74973)
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: pr1MergeForwardCommit
+			})
+		}
 		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
 	}
 	shell.execQuietly = async (cmd) => {
@@ -1666,6 +1683,7 @@ tap.test('branch names with periods work without normalization (issue #14)', asy
 	await writeFile(join(repoDir, 'feature.txt'), 'Feature\n')
 	git('add feature.txt')
 	git('commit -m "Feature commit"')
+	const originalPrHeadSha = git('rev-parse HEAD')
 	git('push -u origin merge-forward-pr-999-release-5.8.0')
 
 	// Verify the branch name contains periods (not normalized to hyphens)
@@ -1680,6 +1698,14 @@ tap.test('branch names with periods work without normalization (issue #14)', asy
 	const core = mockCore({})
 	const shell = new Shell(core)
 	shell.exec = async (cmd) => {
+		// The maintainer asks GitHub for the base branch and
+		// head SHA of the PR that started the chain (#74973)
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: originalPrHeadSha
+			})
+		}
 		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
 	}
 	shell.execQuietly = async (cmd) => {
@@ -1785,6 +1811,7 @@ tap.test('Issue #43: BranchMaintainer merges to main after conflict resolution a
 	await writeFile(join(repoDir, 'test.txt'), 'PR CONTENT\n')
 	git('add test.txt')
 	git('commit -m "PR merge to release-5.8.0"')
+	const originalPrHeadSha = git('rev-parse HEAD')
 	git('push -u origin merge-forward-pr-71156-release-5.8.0')
 
 	// Also update release-5.8.0 so branch-here merge works
@@ -1797,6 +1824,14 @@ tap.test('Issue #43: BranchMaintainer merges to main after conflict resolution a
 	const core = mockCore({})
 	const shell = new Shell(core)
 	shell.exec = async (cmd) => {
+		// The maintainer asks GitHub for the base branch and
+		// head SHA of the PR that started the chain (#74973)
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: originalPrHeadSha
+			})
+		}
 		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
 	}
 	shell.execQuietly = async (cmd) => {
@@ -2047,9 +2082,13 @@ tap.test('#71406: branch-here advances for base branch after conflict resolution
 	const core = mockCore({})
 	const shell = new Shell(core)
 	shell.exec = async (cmd) => {
-		// Mock gh CLI to return the original PR's head SHA
+		// Mock gh CLI to report the original PR's base branch
+		// and head SHA
 		if (cmd.includes('gh pr view')) {
-			return originalPrHeadSha
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: originalPrHeadSha
+			})
 		}
 		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
 	}
@@ -2197,9 +2236,13 @@ tap.test('#71406: branch-here advances for base branch when conflict resolution 
 	const core = mockCore({})
 	const shell = new Shell(core)
 	shell.exec = async (cmd) => {
-		// Mock gh CLI to return the original PR's head SHA
+		// Mock gh CLI to report the original PR's base branch
+		// and head SHA
 		if (cmd.includes('gh pr view')) {
-			return originalPrHeadSha
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: originalPrHeadSha
+			})
 		}
 		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
 	}
@@ -2601,4 +2644,475 @@ tap.test('#74377: a leftover merge-forward branch does not block a re-run', asyn
 	const mainFiles = git('ls-tree --name-only origin/main').split('\n')
 	t.ok(mainFiles.includes('pr-feature.txt'),
 		'main should have the PR change')
+})
+
+tap.test('#74973: branch-here advances for the base branch after a second-hop conflict', async t => {
+	// Reproduces run 33906843247: a chain that conflicted on two
+	// hops, so its merge-conflicts branch names the first hop's
+	// merge-forward branch as the source. branch-here for the
+	// PR's own base branch must still advance.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: release-5.8.0 -> release-5.9.0 -> main, each with a
+	// branch-here pointer where one exists
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+	const initialCommit = git('rev-parse HEAD')
+
+	git('checkout -b release-5.8.0')
+	git('push -u origin release-5.8.0')
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	git('checkout release-5.8.0')
+	git('checkout -b release-5.9.0')
+	await writeFile(join(repoDir, 'r59.txt'), 'On 5.9 only\n')
+	git('add r59.txt')
+	git('commit -m "5.9 baseline"')
+	git('push -u origin release-5.9.0')
+	git('checkout -b branch-here-release-5.9.0')
+	git('push -u origin branch-here-release-5.9.0')
+
+	git('checkout release-5.9.0')
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'main.txt'), 'On main only\n')
+	git('add main.txt')
+	git('commit -m "main baseline"')
+	git('push -u origin main')
+
+	// Original PR #74927 merged into release-5.8.0
+	git('checkout release-5.8.0')
+	await writeFile(join(repoDir, 'feature.txt'), 'New feature\n')
+	git('add feature.txt')
+	git('commit -m "PR 74927 feature"')
+	const originalPrHeadSha = git('rev-parse HEAD')
+	git('push origin release-5.8.0')
+
+	// Hop 1 conflicted at release-5.9.0. The developer resolved
+	// it, so merge-forward-pr-74927-release-5.9.0 carries the
+	// PR's work on top of branch-here-release-5.9.0.
+	git('checkout -b merge-forward-pr-74927-release-5.9.0' +
+		' branch-here-release-5.9.0')
+	git(`merge ${originalPrHeadSha} --no-ff -m "Resolved hop 1"`)
+	git('push -u origin merge-forward-pr-74927-release-5.9.0')
+
+	// Hop 2 then conflicted at main. The developer resolved that
+	// one into merge-forward-pr-74927-main, which is the base of
+	// the resolution PR this run reacts to.
+	git('checkout -b merge-forward-pr-74927-main main')
+	git('merge merge-forward-pr-74927-release-5.9.0 --no-ff' +
+		' -m "Resolved hop 2"')
+	git('push -u origin merge-forward-pr-74927-main')
+
+	const branchHereBefore =
+		git('rev-parse origin/branch-here-release-5.8.0')
+	t.equal(branchHereBefore, initialCommit,
+		'Setup: branch-here-release-5.8.0 should be at the' +
+		' initial commit')
+
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		// Mock gh CLI to report the original PR's base branch
+		// and head SHA
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: originalPrHeadSha
+			})
+		}
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 74969,
+			head: {
+				ref: 'merge-conflicts-74968-pr-74927' +
+					'-merge-forward-pr-74927-release-5.9.0' +
+					'-to-main',
+				sha: 'irrelevant-conflict-resolution-sha'
+			},
+			base: { ref: 'merge-forward-pr-74927-main' }
+		},
+		config: {
+			branches: {
+				'release-5.8.0': {},
+				'release-5.9.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.8.0': 'release-5.9.0',
+				'release-5.9.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	git('fetch origin --prune')
+
+	// KEY ASSERTION: the pointer for the PR's own base branch
+	// advanced, which is the one the merge-forward cleanup can
+	// never reach
+	const branchHereAfter =
+		git('rev-parse origin/branch-here-release-5.8.0')
+	t.not(branchHereAfter, initialCommit,
+		'branch-here-release-5.8.0 should have advanced from' +
+		' the initial commit')
+
+	const branchHereFiles = git(
+		`ls-tree --name-only ${branchHereAfter}`)
+	t.ok(branchHereFiles.includes('feature.txt'),
+		'branch-here-release-5.8.0 should include the PR\'s' +
+		' feature file')
+
+	// Issue #19 - branch-here must stay an ancestor of its
+	// release branch
+	let isAncestor
+	try {
+		git('merge-base --is-ancestor' +
+			' origin/branch-here-release-5.8.0' +
+			' origin/release-5.8.0')
+		isAncestor = true
+	} catch (e) {
+		isAncestor = false
+	}
+	t.ok(isAncestor,
+		'branch-here-release-5.8.0 should remain an ancestor' +
+		' of release-5.8.0')
+
+	// The doubled-up name must never be mistaken for a release
+	// branch
+	const remoteBranches = git('branch --remotes')
+	t.notOk(remoteBranches.includes('branch-here-merge-forward'),
+		'should not create a branch-here for a merge-forward' +
+		' branch')
+
+	// The middle hop still gets its pointer from the cleanup loop
+	const branchHere59Files = git(
+		'ls-tree --name-only origin/branch-here-release-5.9.0')
+	t.ok(branchHere59Files.includes('feature.txt'),
+		'branch-here-release-5.9.0 should include the PR\'s' +
+		' feature file')
+})
+
+tap.test('#74973: every branch-here in the chain advances, not just the original base', async t => {
+	// A PR based on the oldest release line advances three
+	// pointers: every hop it passed through (the merge-forward
+	// cleanup) plus its own base (this fix). No pointer in the
+	// chain may be left behind.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	// Setup: release-5.7.2 -> release-5.8.0 -> release-5.9.0
+	// -> main, each release line with its own branch-here and
+	// its own commit so the pointers start out distinct
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+
+	git('checkout -b release-5.7.2')
+	git('push -u origin release-5.7.2')
+	git('checkout -b branch-here-release-5.7.2')
+	git('push -u origin branch-here-release-5.7.2')
+
+	git('checkout release-5.7.2')
+	git('checkout -b release-5.8.0')
+	await writeFile(join(repoDir, 'r58.txt'), 'On 5.8 only\n')
+	git('add r58.txt')
+	git('commit -m "5.8 baseline"')
+	git('push -u origin release-5.8.0')
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	git('checkout release-5.8.0')
+	git('checkout -b release-5.9.0')
+	await writeFile(join(repoDir, 'r59.txt'), 'On 5.9 only\n')
+	git('add r59.txt')
+	git('commit -m "5.9 baseline"')
+	git('push -u origin release-5.9.0')
+	git('checkout -b branch-here-release-5.9.0')
+	git('push -u origin branch-here-release-5.9.0')
+
+	git('checkout release-5.9.0')
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'main.txt'), 'On main only\n')
+	git('add main.txt')
+	git('commit -m "main baseline"')
+	git('push -u origin main')
+
+	// Original PR #74927 merged into release-5.7.2
+	git('checkout release-5.7.2')
+	await writeFile(join(repoDir, 'feature.txt'), 'New feature\n')
+	git('add feature.txt')
+	git('commit -m "PR 74927 feature"')
+	const originalPrHeadSha = git('rev-parse HEAD')
+	git('push origin release-5.7.2')
+
+	// Every hop's merge-forward branch, each built on the
+	// branch-here of its target as the bot does, carrying the
+	// PR's work forward one branch at a time
+	git('checkout -b merge-forward-pr-74927-release-5.8.0' +
+		' branch-here-release-5.8.0')
+	git(`merge ${originalPrHeadSha} --no-ff -m "Hop 1"`)
+	git('push -u origin merge-forward-pr-74927-release-5.8.0')
+
+	git('checkout -b merge-forward-pr-74927-release-5.9.0' +
+		' branch-here-release-5.9.0')
+	git('merge merge-forward-pr-74927-release-5.8.0 --no-ff' +
+		' -m "Hop 2"')
+	git('push -u origin merge-forward-pr-74927-release-5.9.0')
+
+	git('checkout -b merge-forward-pr-74927-main main')
+	git('merge merge-forward-pr-74927-release-5.9.0 --no-ff' +
+		' -m "Hop 3 (resolved)"')
+	git('push -u origin merge-forward-pr-74927-main')
+
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.7.2',
+				headRefOid: originalPrHeadSha
+			})
+		}
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 74969,
+			head: {
+				ref: 'merge-conflicts-74968-pr-74927' +
+					'-merge-forward-pr-74927-release-5.9.0' +
+					'-to-main',
+				sha: 'irrelevant-conflict-resolution-sha'
+			},
+			base: { ref: 'merge-forward-pr-74927-main' }
+		},
+		config: {
+			branches: {
+				'release-5.7.2': {},
+				'release-5.8.0': {},
+				'release-5.9.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.7.2': 'release-5.8.0',
+				'release-5.8.0': 'release-5.9.0',
+				'release-5.9.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	git('fetch origin --prune')
+
+	// KEY ASSERTION: all three pointers carry the PR's work
+	for (const releaseBranch of
+		['release-5.7.2', 'release-5.8.0', 'release-5.9.0']) {
+		const branchHere = `branch-here-${releaseBranch}`
+		const files = git(
+			`ls-tree --name-only origin/${branchHere}`)
+		t.ok(files.includes('feature.txt'),
+			`${branchHere} should include the PR's feature file`)
+
+		// Issue #19 - and each stays an ancestor of its own
+		// release branch
+		let isAncestor
+		try {
+			git(`merge-base --is-ancestor origin/${branchHere}` +
+				` origin/${releaseBranch}`)
+			isAncestor = true
+		} catch (e) {
+			isAncestor = false
+		}
+		t.ok(isAncestor,
+			`${branchHere} should remain an ancestor of` +
+			` ${releaseBranch}`)
+	}
+
+	// main gets the content too, though it has no pointer
+	const mainFiles = git('ls-tree --name-only origin/main')
+	t.ok(mainFiles.includes('feature.txt'),
+		'main should include the PR\'s feature file')
+})
+
+tap.test('#74973: a mid-chain conflict advances the base pointer, not the predecessor hop', async t => {
+	// The quiet variant: a conflict at a middle hop names the
+	// PREDECESSOR release branch as the source, which is
+	// configured, so parsing the name advanced the wrong
+	// pointer and left the PR's base branch behind with no
+	// error at all.
+
+	const { repoDir, originDir, git } = await createTestRepo()
+
+	t.teardown(async () => {
+		await cleanupTestRepo(repoDir, originDir)
+	})
+
+	await writeFile(join(repoDir, 'base.txt'), 'Base content\n')
+	git('add .')
+	git('commit -m "Initial"')
+
+	git('checkout -b release-5.7.2')
+	git('push -u origin release-5.7.2')
+	git('checkout -b branch-here-release-5.7.2')
+	git('push -u origin branch-here-release-5.7.2')
+
+	git('checkout release-5.7.2')
+	git('checkout -b release-5.8.0')
+	await writeFile(join(repoDir, 'r58.txt'), 'On 5.8 only\n')
+	git('add r58.txt')
+	git('commit -m "5.8 baseline"')
+	git('push -u origin release-5.8.0')
+	git('checkout -b branch-here-release-5.8.0')
+	git('push -u origin branch-here-release-5.8.0')
+
+	git('checkout release-5.8.0')
+	git('checkout -b release-5.9.0')
+	await writeFile(join(repoDir, 'r59.txt'), 'On 5.9 only\n')
+	git('add r59.txt')
+	git('commit -m "5.9 baseline"')
+	git('push -u origin release-5.9.0')
+	git('checkout -b branch-here-release-5.9.0')
+	git('push -u origin branch-here-release-5.9.0')
+
+	git('checkout release-5.9.0')
+	git('checkout -b main')
+	await writeFile(join(repoDir, 'main.txt'), 'On main only\n')
+	git('add main.txt')
+	git('commit -m "main baseline"')
+	git('push -u origin main')
+
+	// Original PR #74927 merged into release-5.7.2
+	git('checkout release-5.7.2')
+	await writeFile(join(repoDir, 'feature.txt'), 'New feature\n')
+	git('add feature.txt')
+	git('commit -m "PR 74927 feature"')
+	const originalPrHeadSha = git('rev-parse HEAD')
+	git('push origin release-5.7.2')
+
+	// Hop 1 (release-5.8.0) merged cleanly on its own
+	git('checkout -b merge-forward-pr-74927-release-5.8.0' +
+		' branch-here-release-5.8.0')
+	git(`merge ${originalPrHeadSha} --no-ff -m "Hop 1"`)
+	git('push -u origin merge-forward-pr-74927-release-5.8.0')
+
+	// Hop 2 (release-5.9.0) conflicted and the developer
+	// resolved it into that hop's merge-forward branch
+	git('checkout -b merge-forward-pr-74927-release-5.9.0' +
+		' branch-here-release-5.9.0')
+	git('merge merge-forward-pr-74927-release-5.8.0 --no-ff' +
+		' -m "Hop 2 (resolved)"')
+	git('push -u origin merge-forward-pr-74927-release-5.9.0')
+
+	// Hop 3 (main) then merged cleanly when the chain resumed
+	git('checkout -b merge-forward-pr-74927-main main')
+	git('merge merge-forward-pr-74927-release-5.9.0 --no-ff' +
+		' -m "Hop 3"')
+	git('push -u origin merge-forward-pr-74927-main')
+
+	const { Shell } = require('gh-action-components')
+	const core = mockCore({})
+	const shell = new Shell(core)
+	shell.exec = async (cmd) => {
+		if (cmd.includes('gh pr view')) {
+			return JSON.stringify({
+				baseRefName: 'release-5.7.2',
+				headRefOid: originalPrHeadSha
+			})
+		}
+		return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+	}
+	shell.execQuietly = async (cmd) => {
+		try {
+			return execSync(cmd, { cwd: repoDir, encoding: 'utf-8' }).trim()
+		} catch (e) {
+			// Silently ignore errors
+		}
+	}
+
+	const BranchMaintainer = require('../src/branch-maintainer')
+
+	// The resolution PR: its head names release-5.8.0 as the
+	// source, because that was the hop the merge came from
+	const maintainer = new BranchMaintainer({
+		pullRequest: {
+			merged: true,
+			number: 74969,
+			head: {
+				ref: 'merge-conflicts-74968-pr-74927' +
+					'-release-5.8.0-to-release-5.9.0',
+				sha: 'irrelevant-conflict-resolution-sha'
+			},
+			base: { ref: 'merge-forward-pr-74927-release-5.9.0' }
+		},
+		config: {
+			branches: {
+				'release-5.7.2': {},
+				'release-5.8.0': {},
+				'release-5.9.0': {},
+				'main': {}
+			},
+			mergeOperations: {
+				'release-5.7.2': 'release-5.8.0',
+				'release-5.8.0': 'release-5.9.0',
+				'release-5.9.0': 'main'
+			}
+		},
+		core,
+		shell
+	})
+
+	await maintainer.run({ automergeConflictBranch: undefined })
+
+	git('fetch origin --prune')
+
+	// KEY ASSERTION: the PR's own base branch, which the name
+	// never mentions
+	const baseBranchHereFiles = git(
+		'ls-tree --name-only origin/branch-here-release-5.7.2')
+	t.ok(baseBranchHereFiles.includes('feature.txt'),
+		'branch-here-release-5.7.2 should include the PR\'s' +
+		' feature file')
 })
