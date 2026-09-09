@@ -2,7 +2,6 @@ const { MB_BRANCH_FAILED_PREFIX, MB_BRANCH_HERE_PREFIX, MB_BRANCH_FORWARD_PREFIX
 const {
 	extractOriginalPRNumber,
 	extractPRFromMergeForward,
-	extractSourceFromMergeConflicts,
 	extractTargetFromMergeForward
 } = require('./branch-name-utils')
 const pushWithRetry = require('./push-with-retry')
@@ -263,52 +262,86 @@ class BranchMaintainer {
 	/**
 	 * Same as advanceBranchHereAfterReleaseMerge, but for the
 	 * conflict-resolution path where this.pullRequest is the
-	 * resolution PR (base: main), not the original. Recovers the
-	 * original PR's release branch from the merge-conflicts branch
-	 * name and its head SHA from the GitHub API.
+	 * resolution PR, not the original. Asks GitHub for the
+	 * original PR's base branch and head SHA.
+	 *
+	 * #74973 - The merge-conflicts branch name encodes the hop
+	 * that conflicted, not the branch the work started on, so
+	 * it cannot supply the base. That base is the one
+	 * branch-here the merge-forward cleanup never reaches: it
+	 * has no merge-forward branch of its own.
 	 */
 	async advanceBranchHereAfterConflictResolution() {
-		const headRef = this.pullRequest.head?.ref ?? ''
-		const releaseBranch =
-			extractSourceFromMergeConflicts(headRef)
-		if (!releaseBranch) {
-			throw new Error(
-				`Cannot parse source branch from` +
-				` merge-conflicts ref '${headRef}'`)
-		}
+		const prNumber = extractOriginalPRNumber({
+			baseRef: this.pullRequest.base?.ref,
+			headRef: this.pullRequest.head?.ref,
+			prNumber: this.pullRequest.number
+		})
+
+		const { baseRefName: releaseBranch, headRefOid: mergeRef } =
+			await this.fetchOriginalPR(prNumber)
+
+		// The terminal branch has no branch-here pointer
 		if (releaseBranch === this.terminalBranch) {
 			return
 		}
 
-		const prNumber = extractOriginalPRNumber({
-			baseRef: this.pullRequest.base?.ref,
-			headRef,
-			prNumber: this.pullRequest.number
-		})
-		const branchHere = MB_BRANCH_HERE_PREFIX + releaseBranch
-
-		let mergeRef
-		try {
-			mergeRef = await this.shell.exec(
-				`gh pr view ${prNumber}` +
-				` --json headRefOid --jq '.headRefOid'`)
-		} catch (e) {
-			this.core.info(
-				`Could not fetch head SHA for PR` +
-				` #${prNumber}, skipping` +
-				` ${branchHere} advancement`)
+		// A release line that left the config is one nobody
+		// branches from, so leaving its pointer behind blocks
+		// no one - warn instead of failing the run.
+		if (!(releaseBranch in this.config.branches)) {
+			this.core.warning(
+				`Not advancing branch-here: PR #${prNumber}` +
+				` was based on '${releaseBranch}', which is` +
+				` not a configured branch. Check whether that` +
+				` PR should have merged forward at all`)
 			return
-		}
-		if (!mergeRef) {
-			throw new Error(
-				`Cannot advance branch-here for` +
-				` '${releaseBranch}': gh pr view` +
-				` #${prNumber} returned no head SHA`)
 		}
 
 		await this.advanceBranchHere({
 			releaseBranch, mergeRef, prNumber
 		})
+	}
+
+	/**
+	 * Reads the base branch and head SHA of the pull request that
+	 * started this merge chain, which is not the one that
+	 * triggered this run.
+	 *
+	 * #74973 - Throws rather than skipping. Developers must
+	 * branch from branch-here, so a pointer left behind blocks
+	 * every later PR on that release line until someone
+	 * advances it by hand - and nobody will know to unless this
+	 * run goes red.
+	 *
+	 * @param {string|number} prNumber - The PR to read
+	 * @returns {Promise<Object>} The PR's baseRefName and headRefOid
+	 */
+	async fetchOriginalPR(prNumber) {
+		const repair =
+			`Advance ${MB_BRANCH_HERE_PREFIX}<base branch> to the` +
+			` head of PR #${prNumber} by hand; until then` +
+			` developers cannot branch from it`
+
+		let originalPR
+		try {
+			originalPR = JSON.parse(await this.shell.exec(
+				`gh pr view ${prNumber}` +
+				` --json baseRefName,headRefOid`))
+		} catch (e) {
+			throw new Error(
+				`Cannot advance branch-here: PR #${prNumber}` +
+				` could not be read (${e.message}). ${repair}`)
+		}
+
+		if (!originalPR.baseRefName || !originalPR.headRefOid) {
+			throw new Error(
+				`Cannot advance branch-here: PR #${prNumber}` +
+				` reported no base branch or head SHA.` +
+				` ${repair}`)
+		}
+
+		return originalPR
 	}
 
 	/**
@@ -327,7 +360,9 @@ class BranchMaintainer {
 		if (!(releaseBranch in this.config.branches)) {
 			throw new Error(
 				`Cannot advance branch-here: '${releaseBranch}'` +
-				` is not a configured branch (PR #${prNumber})`)
+				` is not a configured branch (PR #${prNumber}).` +
+				` ${MB_BRANCH_HERE_PREFIX}${releaseBranch} was` +
+				` not advanced to ${mergeRef}`)
 		}
 
 		const branchHere = MB_BRANCH_HERE_PREFIX + releaseBranch

@@ -385,6 +385,208 @@ tap.test('advanceBranchHereFromMergeForward', async t => {
 		t.ok(pushMain,
 			'should push updated main')
 	})
+
+	t.test('fails when the target is not a configured branch',
+		async t => {
+			// merge-bot named this branch itself, so an
+			// unconfigured target means the config and the
+			// live branches disagree. Advancing nothing
+			// silently would leave developers unable to
+			// branch, so this has to go red.
+			const core = mockCore({})
+			const mockShell = {
+				core,
+				async exec() { return '' },
+				async execQuietly() { return '' }
+			}
+
+			const maintainer = new BranchMaintainer({
+				pullRequest: {
+					number: 70168,
+					head: { ref: 'feature-branch' },
+					base: { ref: 'release-5.8.0' },
+					merged: true
+				},
+				config: {
+					branches: { 'release-5.8.0': {}, 'main': {} },
+					mergeOperations: {}
+				},
+				core,
+				shell: mockShell
+			})
+
+			await t.rejects(
+				maintainer.advanceBranchHereFromMergeForward(
+					'merge-forward-pr-70168-release-9.9.9'),
+				/'release-9.9.9' is not a configured branch/,
+				'should fail naming the unconfigured target')
+		})
+})
+
+tap.test('advanceBranchHereAfterConflictResolution', async t => {
+	// #74973 - The release branch comes from the original PR,
+	// not from the merge-conflicts branch name.
+	function createConflictResolutionMocks({ prView } = {}) {
+		const execCalls = []
+		const core = mockCore({})
+		const shell = {
+			core,
+			async exec(cmd) {
+				execCalls.push(cmd)
+				if (cmd.startsWith('gh pr view')) {
+					return prView()
+				}
+				return ''
+			},
+			async execQuietly(cmd) {
+				execCalls.push(cmd)
+				return ''
+			}
+		}
+
+		const maintainer = new BranchMaintainer({
+			pullRequest: {
+				number: 74969,
+				head: {
+					ref: 'merge-conflicts-74968-pr-74927' +
+						'-merge-forward-pr-74927-release-5.9.0' +
+						'-to-main',
+					sha: 'resolution-sha'
+				},
+				base: { ref: 'merge-forward-pr-74927-main' },
+				merged: true
+			},
+			config: {
+				branches: {
+					'release-5.8.0': {},
+					'release-5.9.0': {},
+					'main': {}
+				},
+				mergeOperations: {}
+			},
+			core,
+			shell
+		})
+
+		return { execCalls, core, maintainer }
+	}
+
+	t.test('advances branch-here for the original PR base', async t => {
+		const { execCalls, maintainer } = createConflictResolutionMocks({
+			prView: () => JSON.stringify({
+				baseRefName: 'release-5.8.0',
+				headRefOid: 'a6115999e79'
+			})
+		})
+
+		await maintainer.run({ automergeConflictBranch: null })
+
+		t.ok(execCalls.includes(
+			'gh pr view 74927 --json baseRefName,headRefOid'),
+		'should read the original PR, not the resolution PR')
+
+		const branchHereMerge = execCalls.find(c =>
+			c.startsWith('git merge a6115999e79') &&
+			c.includes('Merge #74927 into' +
+				' branch-here-release-5.8.0'))
+		t.ok(branchHereMerge,
+			'should merge the original PR head into' +
+			' branch-here for its base branch')
+
+		const strandedTarget = execCalls.find(c =>
+			c.includes('branch-here-merge-forward'))
+		t.notOk(strandedTarget,
+			'should never build a branch-here name from a' +
+			' merge-forward branch')
+	})
+
+	t.test('warns and skips a base that left the config',
+		async t => {
+			// Nobody branches from a retired release line, so
+			// its pointer staying behind blocks no one
+			const { execCalls, core, maintainer } =
+				createConflictResolutionMocks({
+					prView: () => JSON.stringify({
+						baseRefName: 'release-5.6.0',
+						headRefOid: 'a6115999e79'
+					})
+				})
+
+			await maintainer.run({ automergeConflictBranch: null })
+
+			const advanced = execCalls.find(c =>
+				c.includes('branch-here-'))
+			t.notOk(advanced,
+				'should not advance any branch-here')
+			t.ok(core.warningMsgs.find(m =>
+				m.includes('not a configured branch')),
+			'should warn about the unconfigured base')
+		})
+
+	t.test('skips when the base branch has no branch-here',
+		async t => {
+			// A PR based on the terminal branch never merges
+			// forward, so there is no pointer to advance
+			const { execCalls, core, maintainer } =
+				createConflictResolutionMocks({
+					prView: () => JSON.stringify({
+						baseRefName: 'main',
+						headRefOid: 'a6115999e79'
+					})
+				})
+
+			await maintainer.run({ automergeConflictBranch: null })
+
+			const advanced = execCalls.find(c =>
+				c.includes('branch-here-'))
+			t.notOk(advanced,
+				'should not advance any branch-here')
+			t.equal(core.warningMsgs.length, 0,
+				'should not warn - there is nothing to advance')
+		})
+
+	t.test('fails the run when GitHub reports no base branch',
+		async t => {
+			const { maintainer } = createConflictResolutionMocks({
+				prView: () => JSON.stringify({})
+			})
+
+			await t.rejects(
+				maintainer.run({ automergeConflictBranch: null }),
+				/reported no base branch or head SHA/,
+				'should fail on incomplete PR data')
+		})
+
+	t.test('fails the run when the original PR cannot be read',
+		async t => {
+			// A pointer that should advance and doesn't blocks
+			// every later PR on that release line, so this has
+			// to reach a human rather than pass quietly
+			const { maintainer } = createConflictResolutionMocks({
+				prView: () => {
+					throw new Error('gh: PR not found')
+				}
+			})
+
+			await t.rejects(
+				maintainer.run({ automergeConflictBranch: null }),
+				/PR #74927 could not be read/,
+				'should fail with the PR it could not read')
+		})
+
+	t.test('says how to repair a pointer it could not advance',
+		async t => {
+			const { maintainer } = createConflictResolutionMocks({
+				prView: () => {
+					throw new Error('gh: PR not found')
+				}
+			})
+
+			await t.rejects(
+				maintainer.run({ automergeConflictBranch: null }),
+				/by hand; until then developers cannot branch/,
+				'should name the hand repair the failure needs')
+		})
 })
 
 tap.test('run skips maintenance when base is not a configured branch', async t => {
